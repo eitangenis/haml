@@ -53,7 +53,7 @@ module Haml
     # @raise [Haml::Error] if there's a Haml syntax error in the template
     def initialize(template, options = {})
       @options = Options.new(options)
-
+      template = "/ #{options[:filename]} \n" + template + "\n/ End Of -- #{options[:filename]} " if options[:is_debug]
       @template = check_haml_encoding(template) do |msg, line|
         raise Haml::Error.new(msg, line)
       end
