@@ -1,19 +1,33 @@
+begin
+  if ENV['TRAVIS'] && RUBY_VERSION == '2.1.2' && !defined?(Rubinius)
+    require 'coveralls'
+    Coveralls.wear!
+  end
+rescue LoadError
+  # ignore error for other test Gemfiles
+end
+
 if ENV["COVERAGE"]
   require "simplecov"
   SimpleCov.start
 end
 
-require 'rubygems'
-gem "minitest"
-require 'bundler/setup'
+require 'bundler'
 require 'minitest/autorun'
 require 'action_pack'
 require 'action_controller'
 require 'action_view'
+require 'action_view/base'
 require 'nokogiri'
-
 require 'rails'
+Bundler.require(:default)
+
+if defined?(I18n.enforce_available_locales)
+  I18n.enforce_available_locales = true
+end
+
 class TestApp < Rails::Application
+  config.eager_load = false
   config.root = ""
 end
 Rails.application = TestApp
@@ -27,17 +41,23 @@ $VERBOSE = true
 require 'haml'
 require 'haml/template'
 
-Haml::Template.options[:ugly]   = false
+TestApp.initialize!
+
 Haml::Template.options[:format] = :xhtml
+
+BASE_TEST_CLASS = if defined?(Minitest::Test)
+                    Minitest::Test
+                  else
+                    MiniTest::Unit::TestCase
+                  end
 
 module Declarative
   def test(name, &block)
-    define_method("test #{name}", &block)
+    define_method("test_ #{name}", &block)
   end
 end
 
-class MiniTest::Unit::TestCase
-
+class Haml::TestCase < BASE_TEST_CLASS
   extend Declarative
 
   def render(text, options = {}, base = nil, &block)
@@ -65,10 +85,6 @@ class MiniTest::Unit::TestCase
     Haml::Util.silence_warnings(&block)
   end
 
-  def rails_form_opener
-    '<div style="margin:0;padding:0;display:inline"><input name="utf8" type="hidden" value="&#x2713;" /></div>'
-  end
-
   def assert_raises_message(klass, message)
     yield
   rescue Exception => e
@@ -81,5 +97,4 @@ class MiniTest::Unit::TestCase
   def self.error(*args)
     Haml::Error.message(*args)
   end
-
 end

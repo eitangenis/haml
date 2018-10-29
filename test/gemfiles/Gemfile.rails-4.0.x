@@ -1,5 +1,11 @@
-source "http://rubygems.org"
+source "https://rubygems.org"
 
-gem 'bundler', '~> 1.3.0'
-gem 'rails', '~> 4.0.0.rc1'
+if ENV['TRAVIS']
+  platform :mri_21 do
+    gem 'coveralls', require: false
+  end
+end
+
+gem 'rails', '~> 4.0.0'
+gem 'nokogiri', RUBY_VERSION < '2.1' ? '~> 1.6.0' : '>= 1.7'
 gemspec :path => '../..'

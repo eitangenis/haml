@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'forwardable'
 
 require 'haml/parser'
@@ -7,6 +8,7 @@ require 'haml/helpers'
 require 'haml/buffer'
 require 'haml/filters'
 require 'haml/error'
+require 'haml/temple_engine'
 
 module Haml
   # This is the frontend for using Haml programmatically.
@@ -35,9 +37,6 @@ module Haml
     # @return [String]
     attr_accessor :indentation
 
-    attr_accessor :compiler
-    attr_accessor :parser
-
     # Tilt currently depends on these moved methods, provide a stable API
     def_delegators :compiler, :precompiled, :precompiled_method_return_value
 
@@ -59,19 +58,19 @@ module Haml
         raise Haml::Error.new(msg, line)
       end
 
-      initialize_encoding options[:encoding]
+      @temple_engine = TempleEngine.new(options)
+      @temple_engine.compile(@template)
+    end
 
-      @parser   = @options.parser_class.new(@template, @options)
-      @compiler = @options.compiler_class.new(@options)
-
-      @compiler.compile(@parser.parse)
+    # Deprecated API for backword compatibility
+    def compiler
+      @temple_engine
     end
 
     # Processes the template and returns the result as a string.
     #
     # `scope` is the context in which the template is evaluated.
-    # If it's a `Binding` or `Proc` object,
-    # Haml uses it as the second argument to `Kernel#eval`;
+    # If it's a `Binding`, Haml uses it as the second argument to `Kernel#eval`;
     # otherwise, Haml just uses its `#instance_eval` context.
     #
     # Note that Haml modifies the evaluation context
@@ -96,23 +95,23 @@ module Haml
     # within the template.
     #
     # Due to some Ruby quirks,
-    # if `scope` is a `Binding` or `Proc` object and a block is given,
+    # if `scope` is a `Binding` object and a block is given,
     # the evaluation context may not be quite what the user expects.
     # In particular, it's equivalent to passing `eval("self", scope)` as `scope`.
     # This won't have an effect in most cases,
     # but if you're relying on local variables defined in the context of `scope`,
     # they won't work.
     #
-    # @param scope [Binding, Proc, Object] The context in which the template is evaluated
+    # @param scope [Binding, Object] The context in which the template is evaluated
     # @param locals [{Symbol => Object}] Local variables that will be made available
     #   to the template
     # @param block [#to_proc] A block that can be yielded to within the template
     # @return [String] The rendered template
     def render(scope = Object.new, locals = {}, &block)
-      parent = scope.instance_variable_defined?('@haml_buffer') ? scope.instance_variable_get('@haml_buffer') : nil
+      parent = scope.instance_variable_defined?(:@haml_buffer) ? scope.instance_variable_get(:@haml_buffer) : nil
       buffer = Haml::Buffer.new(parent, @options.for_buffer)
 
-      if scope.is_a?(Binding) || scope.is_a?(Proc)
+      if scope.is_a?(Binding)
         scope_object = eval("self", scope)
         scope = scope_object.instance_eval{binding} if block_given?
       else
@@ -122,20 +121,16 @@ module Haml
 
       set_locals(locals.merge(:_hamlout => buffer, :_erbout => buffer.buffer), scope, scope_object)
 
-      scope_object.instance_eval do
-        extend Haml::Helpers
-        @haml_buffer = buffer
-      end
+      scope_object.extend(Haml::Helpers)
+      scope_object.instance_variable_set(:@haml_buffer, buffer)
       begin
-        eval(@compiler.precompiled_with_return_value, scope, @options[:filename], @options[:line])
+        eval(@temple_engine.precompiled_with_return_value, scope, @options.filename, @options.line)
       rescue ::SyntaxError => e
         raise SyntaxError, e.message
       end
     ensure
       # Get rid of the current buffer
-      scope_object.instance_eval do
-        @haml_buffer = buffer.upper if buffer
-      end
+      scope_object.instance_variable_set(:@haml_buffer, buffer.upper) if buffer
     end
     alias_method :to_html, :render
 
@@ -160,11 +155,11 @@ module Haml
     #
     # The proc doesn't take a block; any yields in the template will fail.
     #
-    # @param scope [Binding, Proc, Object] The context in which the template is evaluated
+    # @param scope [Binding, Object] The context in which the template is evaluated
     # @param local_names [Array<Symbol>] The names of the locals that can be passed to the proc
     # @return [Proc] The proc that will run the template
     def render_proc(scope = Object.new, *local_names)
-      if scope.is_a?(Binding) || scope.is_a?(Proc)
+      if scope.is_a?(Binding)
         scope_object = eval("self", scope)
       else
         scope_object = scope
@@ -172,8 +167,13 @@ module Haml
       end
 
       begin
-        eval("Proc.new { |*_haml_locals| _haml_locals = _haml_locals[0] || {};" +
-             compiler.precompiled_with_ambles(local_names) + "}\n", scope, @options[:filename], @options[:line])
+        str = @temple_engine.precompiled_with_ambles(local_names)
+        eval(
+          "Proc.new { |*_haml_locals| _haml_locals = _haml_locals[0] || {}; #{str}}\n",
+          scope,
+          @options.filename,
+          @options.line
+        )
       rescue ::SyntaxError => e
         raise SyntaxError, e.message
       end
@@ -183,7 +183,7 @@ module Haml
     # that renders the template and returns the result as a string.
     #
     # If `object` is a class or module,
-    # the method will instead by defined as an instance method.
+    # the method will instead be defined as an instance method.
     # For example:
     #
     #     t = Time.now
@@ -220,25 +220,14 @@ module Haml
     def def_method(object, name, *local_names)
       method = object.is_a?(Module) ? :module_eval : :instance_eval
 
-      object.send(method, "def #{name}(_haml_locals = {}); #{compiler.precompiled_with_ambles(local_names)}; end",
-                  @options[:filename], @options[:line])
+      object.send(method, "def #{name}(_haml_locals = {}); #{@temple_engine.precompiled_with_ambles(local_names)}; end",
+                  @options.filename, @options.line)
     end
 
     private
 
-    if RUBY_VERSION < "1.9"
-      def initialize_encoding(given_value)
-      end
-    else
-      def initialize_encoding(given_value)
-        unless given_value
-          @options.encoding = Encoding.default_internal || @template.encoding
-        end
-      end
-    end
-
     def set_locals(locals, scope, scope_object)
-      scope_object.send(:instance_variable_set, '@_haml_locals', locals)
+      scope_object.instance_variable_set :@_haml_locals, locals
       set_locals = locals.keys.map { |k| "#{k} = @_haml_locals[#{k.inspect}]" }.join("\n")
       eval(set_locals, scope)
     end

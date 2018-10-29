@@ -1,6 +1,7 @@
+# frozen_string_literal: true
 require 'test_helper'
 
-class FiltersTest < MiniTest::Unit::TestCase
+class FiltersTest < Haml::TestCase
   test "should be registered as filters when including Haml::Filters::Base" do
     begin
       refute Haml::Filters.defined.has_key? "bar"
@@ -26,8 +27,11 @@ class FiltersTest < MiniTest::Unit::TestCase
   test "should raise error when a Tilt filters dependencies are unavailable for extension" do
     begin
       assert_raises Haml::Error do
-        Haml::Filters.register_tilt_filter "Textile"
-        Haml::Filters.defined["textile"].template_class
+        # ignore warnings from Tilt
+        silence_warnings do
+          Haml::Filters.register_tilt_filter "Textile"
+          Haml::Filters.defined["textile"].template_class
+        end
       end
     ensure
       Haml::Filters.remove_filter "Textile"
@@ -64,7 +68,7 @@ class FiltersTest < MiniTest::Unit::TestCase
   end
 
   test "should respect escaped newlines and interpolation" do
-    html = "\\n\n"
+    html = "\\n\n\n"
     haml = ":plain\n  \\n\#{""}"
     assert_equal(html, render(haml))
   end
@@ -73,16 +77,21 @@ class FiltersTest < MiniTest::Unit::TestCase
     assert_equal("\n", render(':plain'))
   end
 
-  test "should be compatible with ugly mode" do
+  test ":plain with content" do
     expectation = "foo\n"
-    assert_equal(expectation, render(":plain\n  foo", :ugly => true))
+    assert_equal(expectation, render(":plain\n  foo"))
   end
 
   test "should pass options to Tilt filters that precompile" do
-    haml  = ":erb\n  <%= 'foo' %>"
-    refute_match('TEST_VAR', Haml::Engine.new(haml).compiler.precompiled)
-    Haml::Filters::Erb.options = {:outvar => 'TEST_VAR'}
-    assert_match('TEST_VAR', Haml::Engine.new(haml).compiler.precompiled)
+    begin
+      orig_erb_opts = Haml::Filters::Erb.options
+      haml  = ":erb\n  <%= 'foo' %>"
+      refute_match('test_var', Haml::Engine.new(haml).compiler.precompiled)
+      Haml::Filters::Erb.options = {:outvar => 'test_var'}
+      assert_match('test_var', Haml::Engine.new(haml).compiler.precompiled)
+    ensure
+      Haml::Filters::Erb.options = orig_erb_opts
+    end
   end
 
   test "should pass options to Tilt filters that don't precompile" do
@@ -109,30 +118,30 @@ class FiltersTest < MiniTest::Unit::TestCase
     end
   end
 
+  test "interpolated code should be escaped if escape_html is set" do
+    assert_equal "&lt;script&gt;evil&lt;/script&gt;\n\n",
+                 render(":plain\n  \#{'<script>evil</script>'}", :escape_html => true)
+  end
+
 end
 
-class ErbFilterTest < MiniTest::Unit::TestCase
+class ErbFilterTest < Haml::TestCase
   test "multiline expressions should work" do
-    html = "foobarbaz\n"
+    html = "foobarbaz\n\n"
     haml = %Q{:erb\n  <%= "foo" +\n      "bar" +\n      "baz" %>}
     assert_equal(html, render(haml))
   end
 
   test "should evaluate in the same context as Haml" do
     haml  = ":erb\n  <%= foo %>"
-    html  = "bar\n"
+    html  = "bar\n\n"
     scope = Object.new.instance_eval {foo = "bar"; nil if foo; binding}
     assert_equal(html, render(haml, :scope => scope))
   end
 
-  test "should use Rails's XSS safety features" do
-    assert_equal("&lt;img&gt;\n", render(":erb\n  <%= '<img>' %>"))
-    assert_equal("<img>\n", render(":erb\n  <%= '<img>'.html_safe %>"))
-  end
-
 end
 
-class JavascriptFilterTest < MiniTest::Unit::TestCase
+class JavascriptFilterTest < Haml::TestCase
   test "should interpolate" do
     scope = Object.new.instance_eval {foo = "bar"; nil if foo; binding}
     haml  = ":javascript\n  \#{foo}"
@@ -140,8 +149,8 @@ class JavascriptFilterTest < MiniTest::Unit::TestCase
     assert_match(/bar/, html)
   end
 
-  test "should never HTML-escape ampersands" do
-    html = "<script>\n  & < > &\n</script>\n"
+  test "should never HTML-escape non-interpolated ampersands" do
+    html = "<script>\n  & < > &amp;\n</script>\n"
     haml = %Q{:javascript\n  & < > \#{"&"}}
     assert_equal(html, render(haml, :escape_html => true))
   end
@@ -176,9 +185,15 @@ class JavascriptFilterTest < MiniTest::Unit::TestCase
     refute_match('//<![CDATA[', out)
     refute_match('//]]>', out)
   end
+
+  test "should emit tag on empty block" do
+    html = "<script>\n  \n</script>\n"
+    haml = ":javascript"
+    assert_equal(html, render(haml))
+  end
 end
 
-class CSSFilterTest < MiniTest::Unit::TestCase
+class CSSFilterTest < Haml::TestCase
   test "should wrap output in CDATA and a CSS tag when output is XHTML" do
     html = "<style type='text/css'>\n  /*<![CDATA[*/\n    foo\n  /*]]>*/\n</style>\n"
     haml = ":css\n  foo"
@@ -215,9 +230,15 @@ class CSSFilterTest < MiniTest::Unit::TestCase
     refute_match('<![CDATA[', out)
     refute_match(']]>', out)
   end
+
+  test "should emit tag on empty block" do
+    html = "<style>\n  \n</style>\n"
+    haml = ":css"
+    assert_equal(html, render(haml))
+  end
 end
 
-class CDATAFilterTest < MiniTest::Unit::TestCase
+class CDATAFilterTest < Haml::TestCase
   test "should wrap output in CDATA tag" do
     html = "<![CDATA[\n    foo\n]]>\n"
     haml = ":cdata\n  foo"
@@ -225,7 +246,7 @@ class CDATAFilterTest < MiniTest::Unit::TestCase
   end
 end
 
-class EscapedFilterTest < MiniTest::Unit::TestCase
+class EscapedFilterTest < Haml::TestCase
   test "should escape ampersands" do
     html = "&amp;\n"
     haml = ":escaped\n  &"
@@ -233,7 +254,7 @@ class EscapedFilterTest < MiniTest::Unit::TestCase
   end
 end
 
-class RubyFilterTest < MiniTest::Unit::TestCase
+class RubyFilterTest < Haml::TestCase
   test "can write to haml_io" do
     haml = ":ruby\n  haml_io.puts 'hello'\n"
     html = "hello\n"
@@ -249,6 +270,12 @@ class RubyFilterTest < MiniTest::Unit::TestCase
   test "can create local variables" do
     haml = ":ruby\n  a = 7\n=a"
     html = "7\n"
+    assert_equal(html, render(haml))
+  end
+
+  test "can render empty filter" do
+    haml = ":ruby\n%foo"
+    html = "<foo></foo>\n"
     assert_equal(html, render(haml))
   end
 end

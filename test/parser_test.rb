@@ -1,7 +1,8 @@
+# frozen_string_literal: true
 require 'test_helper'
 
 module Haml
-  class ParserTest < MiniTest::Unit::TestCase
+  class ParserTest < Haml::TestCase
 
     test "should raise error for 'else' at wrong indent level" do
       begin
@@ -66,7 +67,7 @@ module Haml
         flunk 'else clause after if containing unless should be accepted'
       end
     end
-    
+
     test "loud script with else is accepted" do
       begin
         parse "= if true\n  - 'A'\n-else\n  - 'B'"
@@ -94,12 +95,79 @@ module Haml
       end
     end
 
+    test "revealed conditional comments are detected" do
+      text = "some revealed text"
+      cond = "[cond]"
+
+      node = parse("/!#{cond} #{text}").children[0]
+
+      assert_equal text, node.value[:text]
+      assert_equal cond, node.value[:conditional]
+      assert node.value[:revealed]
+    end
+
+    test "hidden conditional comments are detected" do
+      text = "some revealed text"
+      cond = "[cond]"
+
+      node = parse("/#{cond} #{text}").children[0]
+
+      assert_equal text, node.value[:text]
+      assert_equal cond, node.value[:conditional]
+      refute node.value[:revealed]
+    end
+
+    test "only script lines are checked for continuation keywords" do
+      haml = "- if true\n  setup\n- else\n  else\n"
+      node = parse(haml).children[0]
+      assert_equal(3, node.children.size)
+    end
+
+    # see #830. Strictly speaking the pipe here is not necessary, but there
+    # shouldn't be an error if it is there.
+    test "multiline Ruby with extra trailing pipe doesn't raise error" do
+      haml = "%p= foo bar, |\n  baz"
+      begin
+        parse haml
+      rescue Haml::SyntaxError
+        flunk "Should not have raised SyntaxError"
+      end
+    end
+
+    test "empty filter doesn't hide following lines" do
+      root = parse "%p\n  :plain\n  %p\n"
+      p_element = root.children[0]
+      assert_equal 2, p_element.children.size
+      assert_equal :filter, p_element.children[0].type
+      assert_equal :tag, p_element.children[1].type
+    end
+
+    # Previously blocks under a haml_comment would be rejected if any line was
+    # indented by a value that wasn't a multiple of the document indentation.
+    test "haml_comment accepts any indentation in content" do
+      begin
+        parse "-\#\n  Indented two spaces\n   Indented three spaces"
+      rescue Haml::SyntaxError
+        flunk "haml_comment should accept any combination of indentation"
+      end
+    end
+
+    test "block haml_comment includes text" do
+      root = parse "-#\n  Hello\n   Hello\n"
+      assert_equal "Hello\n Hello\n", root.children[0].value[:text]
+    end
+
+    test "block haml_comment includes first line if present" do
+      root = parse "-# First line\n  Hello\n   Hello\n"
+      assert_equal " First line\nHello\n Hello\n", root.children[0].value[:text]
+    end
+
     private
 
     def parse(haml, options = nil)
       options ||= Options.new
-      parser = Parser.new(haml, options)
-      parser.parse
+      parser = Parser.new(options)
+      parser.call(haml)
     end
   end
 end

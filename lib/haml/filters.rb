@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require "tilt"
 
 module Haml
@@ -59,7 +60,7 @@ module Haml
     end
 
     # Removes a filter from Haml. If the filter was removed, it returns
-    # the that was remove Module upon success, or nil on failure. If you try
+    # the Module that was removed upon success, or nil on failure. If you try
     # to redefine a filter, Haml will raise an error. Use this method first to
     # explicitly remove the filter before redefining it.
     # @return Module The filter module that has been removed
@@ -163,10 +164,10 @@ module Haml
           if contains_interpolation?(text)
             return if options[:suppress_eval]
 
-            text = unescape_interpolation(text).gsub(/(\\+)n/) do |s|
+            text = unescape_interpolation(text, options[:escape_html]).gsub(/(\\+)n/) do |s|
               escapes = $1.size
               next s if escapes % 2 == 0
-              ("\\" * (escapes - 1)) + "\n"
+              "#{'\\' * (escapes - 1)}\n"
             end
             # We need to add a newline at the beginning to get the
             # filter lines to line up (since the Haml filter contains
@@ -174,20 +175,15 @@ module Haml
             # filter name). Then we need to escape the trailing
             # newline so that the whole filter block doesn't take up
             # too many.
-            text = "\n" + text.sub(/\n"\Z/, "\\n\"")
+            text = %[\n#{text.sub(/\n"\Z/, "\\n\"")}]
             push_script <<RUBY.rstrip, :escape_html => false
 find_and_preserve(#{filter.inspect}.render_with_options(#{text}, _hamlout.options))
 RUBY
             return
           end
 
-          rendered = Haml::Helpers::find_and_preserve(filter.render_with_options(text, compiler.options), compiler.options[:preserve])
-
-          if options[:ugly]
-            push_text(rendered.rstrip)
-          else
-            push_text(rendered.rstrip.gsub("\n", "\n#{'  ' * @output_tabs}"))
-          end
+          rendered = Haml::Helpers::find_and_preserve(filter.render_with_options(text.to_s, compiler.options), compiler.options[:preserve])
+          push_text("#{rendered.rstrip}\n")
         end
       end
     end
@@ -216,13 +212,10 @@ RUBY
           type = " type=#{options[:attr_wrapper]}text/javascript#{options[:attr_wrapper]}"
         end
 
-        str = "<script#{type}>\n"
-        str << "  //<![CDATA[\n" if options[:cdata]
-        str << "#{indent}#{text.rstrip.gsub("\n", "\n#{indent}")}\n"
-        str << "  //]]>\n" if options[:cdata]
-        str << "</script>"
+        text = text.rstrip
+        text.gsub!("\n", "\n#{indent}")
 
-        str
+        %!<script#{type}>\n#{"  //<![CDATA[\n" if options[:cdata]}#{indent}#{text}\n#{"  //]]>\n" if options[:cdata]}</script>!
       end
     end
 
@@ -240,13 +233,10 @@ RUBY
           type = " type=#{options[:attr_wrapper]}text/css#{options[:attr_wrapper]}"
         end
 
-        str = "<style#{type}>\n"
-        str << "  /*<![CDATA[*/\n" if options[:cdata]
-        str << "#{indent}#{text.rstrip.gsub("\n", "\n#{indent}")}\n"
-        str << "  /*]]>*/\n" if options[:cdata]
-        str << "</style>"
+        text = text.rstrip
+        text.gsub!("\n", "\n#{indent}")
 
-        str
+        %(<style#{type}>\n#{"  /*<![CDATA[*/\n" if options[:cdata]}#{indent}#{text}\n#{"  /*]]>*/\n" if options[:cdata]}</style>)
       end
     end
 
@@ -256,7 +246,7 @@ RUBY
 
       # @see Base#render
       def render(text)
-        "<![CDATA[#{("\n" + text).rstrip.gsub("\n", "\n    ")}\n]]>"
+        "<![CDATA[#{"\n#{text.rstrip}".gsub("\n", "\n    ")}\n]]>"
       end
     end
 
@@ -288,7 +278,7 @@ RUBY
       def compile(compiler, text)
         return if compiler.options[:suppress_eval]
         compiler.instance_eval do
-          push_silent <<-FIRST.gsub("\n", ';') + text + <<-LAST.gsub("\n", ';')
+          push_silent "#{<<-FIRST.tr("\n", ';')}#{text}#{<<-LAST.tr("\n", ';')}"
             begin
               haml_io = StringIO.new(_hamlout.buffer, 'a')
           FIRST

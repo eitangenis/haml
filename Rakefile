@@ -1,44 +1,37 @@
 require "rake/clean"
 require "rake/testtask"
-require "rubygems/package_task"
+require "bundler/gem_tasks"
 
 task :default => :test
 
+# FIXME: Redefining :test task to run test/options_test.rb in isolated process since it depends on whether Rails is loaded or not.
+# Remove this task when we finished changing escape_html option to be true by default.
+isolated_test = Rake::TestTask.new do |t|
+  t.libs << 'test'
+  t.test_files = %w[test/options_test.rb]
+  t.warning = true
+  t.verbose = true
+end
+Rake::TestTask.new do |t|
+  t.libs << 'test'
+  t.test_files = Dir['test/*_test.rb'] + Dir['test/haml-spec/*_test.rb'] - isolated_test.file_list
+  t.warning = true
+  t.verbose = true
+end
+
 CLEAN.replace %w(pkg doc coverage .yardoc test/haml vendor)
 
-def silence_warnings
-  the_real_stderr, $stderr = $stderr, StringIO.new
-  yield
-ensure
-  $stderr = the_real_stderr
-end
-
-desc "Benchmark Haml against ERb. TIMES=n sets the number of runs, default is 1000."
+desc "Benchmark Haml against ERB. TIMES=n sets the number of runs, default is 1000."
 task :benchmark do
   sh "ruby benchmark.rb #{ENV['TIMES']}"
-end
-
-Rake::TestTask.new do |t|
-  t.libs << 'lib' << 'test'
-  # haml-spec tests are explicitly added after other tests so they don't
-  # interfere with the Haml loading process which can cause test failures
-  files = Dir["test/*_test.rb"]
-  files.concat(Dir['test/haml-spec/*_test.rb'])
-  t.test_files = files
-  t.verbose = true
 end
 
 task :set_coverage_env do
   ENV["COVERAGE"] = "true"
 end
 
-desc "Run Simplecov (only works on 1.9)"
+desc "Run Simplecov"
 task :coverage => [:set_coverage_env, :test]
-
-gemspec = File.expand_path("../haml.gemspec", __FILE__)
-if File.exist? gemspec
-  Gem::PackageTask.new(eval(File.read(gemspec))) { |pkg| }
-end
 
 task :submodules do
   if File.exist?(File.dirname(__FILE__) + "/.git")
@@ -47,31 +40,32 @@ task :submodules do
   end
 end
 
-begin
-  silence_warnings do
-    require 'yard'
-  end
-
-  namespace :doc do
-    desc "List all undocumented methods and classes."
-    task :undocumented do
-      command = 'yard --list --query '
-      command << '"object.docstring.blank? && '
-      command << '!(object.type == :method && object.is_alias?)"'
-      sh command
+namespace :doc do
+  task :sass do
+    require 'sass'
+    Dir["yard/default/**/*.sass"].each do |sass|
+      File.open(sass.gsub(/sass$/, 'css'), 'w') do |f|
+        f.write(Sass::Engine.new(File.read(sass)).render)
+      end
     end
   end
 
-  desc "Generate documentation"
-  task(:doc) {sh "yard"}
-
-  desc "Generate documentation incrementally"
-  task(:redoc) {sh "yard -c"}
-
-rescue LoadError
+  desc "List all undocumented methods and classes."
+  task :undocumented do
+    command = 'yard --list --query '
+    command << '"object.docstring.blank? && '
+    command << '!(object.type == :method && object.is_alias?)"'
+    sh command
+  end
 end
 
-  desc <<END
+desc "Generate documentation"
+task(:doc => 'doc:sass') {sh "yard"}
+
+desc "Generate documentation incrementally"
+task(:redoc) {sh "yard -c"}
+
+desc <<END
 Profile Haml.
   TIMES=n sets the number of runs. Defaults to 1000.
   FILE=str sets the file to profile. Defaults to 'standard'
@@ -80,15 +74,14 @@ Profile Haml.
 END
 task :profile do
   times  = (ENV['TIMES'] || '1000').to_i
-  file   = ENV['FILE']
+  file   = ENV['FILE'] || 'test/templates/standard.haml'
 
   require 'bundler/setup'
   require 'ruby-prof'
   require 'haml'
-
-  file = File.read(File.expand_path("../test/templates/#{file || 'standard'}.haml", __FILE__))
+  file = File.read(File.expand_path("../#{file}", __FILE__))
   obj = Object.new
-  Haml::Engine.new(file, :ugly => true).def_method(obj, :render)
+  Haml::Engine.new(file).def_method(obj, :render)
   result = RubyProf.profile { times.times { obj.render } }
 
   RubyProf.const_get("#{(ENV['OUTPUT'] || 'Flat').capitalize}Printer").new(result).print
@@ -103,14 +96,13 @@ def gemfiles
 end
 
 def with_each_gemfile
-  old_env = ENV['BUNDLE_GEMFILE']
   gemfiles.each do |gemfile|
-    puts "Using gemfile: #{gemfile}"
-    ENV['BUNDLE_GEMFILE'] = gemfile
-    yield
+    Bundler.with_clean_env do
+      puts "Using gemfile: #{gemfile}"
+      ENV['BUNDLE_GEMFILE'] = gemfile
+      yield
+    end
   end
-ensure
-  ENV['BUNDLE_GEMFILE'] = old_env
 end
 
 namespace :test do

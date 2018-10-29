@@ -121,7 +121,7 @@ see {Haml::Options}.
 
 ### Encodings
 
-When using Ruby 1.9 or later, Haml supports the same sorts of
+Haml supports the same sorts of
 encoding-declaration comments that Ruby does. Although both Ruby and Haml
 support several different styles, the easiest it just to add `-# coding:
 encoding-name` at the beginning of the Haml template (it must come before all
@@ -233,8 +233,7 @@ is compiled to:
 
     <script src='javascripts/script_9' type='text/javascript'></script>
 
-#### `:class` and `:id` Attributes
-{#class-and-id-attributes}
+#### `:class` and `:id` Attributes {#class-and-id-attributes}
 
 The `:class` and `:id` attributes can also be specified as a Ruby array whose
 elements will be joined together. A `:class` array is joined with `" "` and an
@@ -306,7 +305,7 @@ hash-style attributes:
 
 #### Ruby 1.9-style Hashes
 
-On Ruby 1.9, Haml also supports Ruby's new hash syntax:
+Haml also supports Ruby's new hash syntax:
 
     %a{title: @title, href: href} Stuff
 
@@ -329,7 +328,7 @@ This is compiled to:
     </html>
 
 You can use as many such attribute methods as you want by separating them with
-commas, like a Ruby argument list. All the hashes will me merged together, from
+commas, like a Ruby argument list. All the hashes will be merged together, from
 left to right. For example, if you defined
 
     def hash1
@@ -389,27 +388,49 @@ or using `true` and `false`:
 
     %input(selected=true)
 
-#### HTML5 Custom Data Attributes
+<!-- The title to the next section (Prefixed Attributes) has changed. This
+<a> tag is so old links to here still work. -->
+<a id="html5_custom_data_attributes" style="border:0;"></a>
 
-HTML5 allows for adding [custom non-visible data
-attributes](http://www.whatwg.org/specs/web-apps/current-work/multipage/elements.html#embedding-custom-non-visible-data)
-to elements using attribute names beginning with `data-`. Custom data attributes
-can be used in Haml by using the key `:data` with a Hash value in an attribute
-hash. Each of the key/value pairs in the Hash will be transformed into a custom
-data attribute. For example:
+#### Prefixed Attributes
 
-    %a{:href=>"/posts", :data => {:author_id => 123}} Posts By Author
+HTML5 allows for adding
+[custom non-visible data attributes](http://www.whatwg.org/specs/web-apps/current-work/multipage/elements.html#embedding-custom-non-visible-data-with-the-data-*-attributes)
+to elements using attribute names beginning with `data-`. The
+[Accessible Rich Internet Applications](http://www.w3.org/WAI/intro/aria)
+specification makes use of attributes beginning with `aria-`. There are also
+frameworks that use non-standard attributes with a common prefix.
+
+Haml can help generate collections of attributes that share a prefix like
+these. Any entry in an attribute hash that has a Hash as its value is expanded
+into a series of attributes, one for each key/value pair in the hash, with the
+attribute name formed by joining the “parent” key name to the key name with a
+hyphen.
+
+For example:
+
+    %a{:href=>"/posts", :data => {:author_id => 123, :category => 7}} Posts By Author
 
 will render as:
 
-    <a data-author-id='123' href='/posts'>Posts By Author</a>
+    <a data-author-id='123' data-category='7' href='/posts'>Posts By Author</a>
 
 Notice that the underscore in `author_id` was replaced by a hyphen. If you wish
 to suppress this behavior, you can set Haml's
 {Haml::Options#hyphenate_data_attrs `:hyphenate_data_attrs` option} to `false`,
 and the output will be rendered as:
 
-    <a data-author_id='123' href='/posts'>Posts By Author</a>
+    <a data-author_id='123' data-category='7' href='/posts'>Posts By Author</a>
+
+This expansion of hashes is recursive – any value of the child hash that is
+itself a hash will create an attribute for each entry, with the attribute name
+prefixed with all ancestor keys. For example:
+
+    .book-info{:data => {:book => {:id => 123, :genre => 'programming'}, :category => 7}}
+
+will render as:
+
+    <div class='book-info' data-book-genre='programming' data-book-id='123' data-category='7'></div>
 
 ### Class and ID: `.` and `#`
 
@@ -496,22 +517,22 @@ and is compiled to:
 The forward slash character, when placed at the end of a tag definition, causes
 Haml to treat it as being an empty (or void) element. Depending on the format,
 the tag will be rendered either without a closing tag (`:html4` or `:html5`), or
-as a self-closing tag (`:xhtml`). For example:
+as a self-closing tag (`:xhtml`).
+
+Taking the following as an example:
 
     %br/
     %meta{'http-equiv' => 'Content-Type', :content => 'text/html'}/
 
-is compiled to:
+When the format is `:html4` or `:html5` this is compiled to:
 
     <br>
     <meta content='text/html' http-equiv='Content-Type'>
 
-when the format is `:html4` or `:html5`, and to
+and when the format is `:xhtml` it is compiled to:
 
     <br />
     <meta content='text/html' http-equiv='Content-Type' />
-
-when the format is `:xhtml`.
 
 Some tags are automatically treated as being empty, as long as they have no
 content in the Haml source. `meta`, `img`, `link`, `br`, `hr`, `input`,
@@ -779,6 +800,21 @@ is compiled to:
       </a>
     <![endif]-->
 
+To generate “downlevel-revealed” conditional comments, where the content is
+hidden from IE but not other browsers,  add a `!` before the brackets: `/![]`.
+Haml will produce valid HTML when generating this kind of conditional comment.
+
+For example:
+
+    /![if !IE]
+      You are not using Internet Explorer, or are using version 10+.
+
+is compiled to:
+
+    <!--[if !IE]><!-->
+      You are not using Internet Explorer, or are using version 10+.
+    <!--<![endif]-->
+
 ### Haml Comments: `-#`
 
 The hyphen followed immediately by the pound sign signifies a silent comment.
@@ -985,6 +1021,21 @@ might compile to:
       //]]>
     </script>
 
+#### Gotchas
+
+Haml uses an overly simplistic regular expression to identify string
+interpolation rather than a full-blown Ruby parser. This is fast and works for
+most code but you may have errors with code like the following:
+
+    %span #{'{'}
+
+This code will generate a syntax error, complaining about unbalanced brackets.
+In cases like this, the recommended workaround is output the code as a Ruby
+string to force Haml to parse the code with Ruby.
+
+    %span= "#{'{'}"
+
+
 ### Escaping HTML: `&=` {#escaping_html}
 
 An ampersand followed by one or two equals characters evaluates Ruby code just
@@ -1069,8 +1120,8 @@ is compiled to
       <p>I <strong>really</strong> prefer <em>raspberry</em> jam.</p>
     </div>
 
-Currently, filters ignore the {Haml::Options#escape_html `:escape_html`} option.
-This means that `#{}` interpolation within filters is never HTML-escaped.
+Note that `#{}` interpolation within filters is HTML-escaped if you specify
+{Haml::Options#escape_html `:escape_html`} option.
 
 The functionality of some filters such as Markdown can be provided by many
 different libraries. Usually you don't have to worry about this - you can just
@@ -1087,53 +1138,53 @@ more info.
 
 Haml comes with the following filters defined:
 
-{#cdata-filter}
-### `:cdata`
+### `:cdata` {#cdata-filter}
+
 Surrounds the filtered text with CDATA tags.
 
-{#coffee-filter}
-### `:coffee`
-Compiles the filtered text to Javascript using Cofeescript. You can also
-reference this filter as `:coffeescript`. This filter is implemented using
-Tilt.
+### `:coffee` {#coffee-filter}
 
-{#css-filter}
-### `:css`
+Compiles the filtered text to JavaScript in `<script>` tag using CoffeeScript.
+You can also reference this filter as `:coffeescript`. This filter is
+implemented using Tilt.
+
+### `:css` {#css-filter}
+
 Surrounds the filtered text with `<style>` and (optionally) CDATA tags. Useful
 for including inline CSS. Use the {Haml::Options#cdata `:cdata` option} to
 control when CDATA tags are added.
 
-{#erb-filter}
-### `:erb`
-Parses the filtered text with ERb, like an RHTML template. Not available if the
+### `:erb` {#erb-filter}
+
+Parses the filtered text with ERB, like an RHTML template. Not available if the
 {Haml::Options#suppress_eval `:suppress_eval`} option is set to true. Embedded
 Ruby code is evaluated in the same context as the Haml template. This filter is
 implemented using Tilt.
 
-{#escaped-filter}
-### `:escaped`
+### `:escaped` {#escaped-filter}
+
 Works the same as plain, but HTML-escapes the text
 before placing it in the document.
 
-{#javascript-filter}
-### `:javascript`
+### `:javascript` {#javascript-filter}
+
 Surrounds the filtered text with `<script>` and (optionally) CDATA tags.
 Useful for including inline Javascript. Use the {Haml::Options#cdata `:cdata`
 option} to control when CDATA tags are added.
 
-{#less-filter}
-### `:less`
-Parses the filtered text with [Less](http://lesscss.org/) to produce CSS output.
+### `:less` {#less-filter}
+
+Parses the filtered text with [Less](http://lesscss.org/) to produce CSS output in `<style>` tag.
 This filter is implemented using Tilt.
 
-{#markdown-filter}
-### `:markdown`
+### `:markdown` {#markdown-filter}
+
 Parses the filtered text with
 [Markdown](http://daringfireball.net/projects/markdown). This filter is
 implemented using Tilt.
 
-{#maruku-filter}
-### `:maruku`
+### `:maruku` {#maruku-filter}
+
 Parses the filtered text with [Maruku](https://github.com/nex3/maruku), which
 has some non-standard extensions to Markdown.
 
@@ -1142,39 +1193,40 @@ contrib](https://github.com/haml/haml-contrib) but is loaded automatically for
 historical reasons. In future versions of Haml it will likely not be loaded by
 default. This filter is implemented using Tilt.
 
-{#plain-filter}
-### `:plain`
+### `:plain` {#plain-filter}
+
 Does not parse the filtered text. This is useful for large blocks of text
 without HTML tags, when you don't want lines starting with `.` or `-` to be
 parsed.
 
-{#preserve-filter}
-### `:preserve`
+### `:preserve` {#preserve-filter}
+
 Inserts the filtered text into the template with whitespace preserved.
 `preserve`d blocks of text aren't indented, and newlines are replaced with the
 HTML escape code for newlines, to preserve nice-looking output. See also
 [Whitespace Preservation](#whitespace_preservation).
 
-{#ruby-filter}
-### `:ruby`
+### `:ruby` {#ruby-filter}
+
 Parses the filtered text with the normal Ruby interpreter. Creates an `IO`
 object named `haml_io`, anything written to it is output into the Haml document.
 Not available if the {Haml::Options#suppress_eval `:suppress_eval`} option is
 set to true. The Ruby code is evaluated in the same context as the Haml
 template.
 
-{#sass-filter}
-### `:sass`
+### `:sass` {#sass-filter}
+
 Parses the filtered text with [Sass](http://sass-lang.com/) to produce CSS
-output. This filter is implemented using Tilt.
+output in `<style>` tag. This filter is implemented using Tilt.
 
-{#scss-filter}
-### `:scss`
+### `:scss` {#scss-filter}
+
 Parses the filtered text with Sass like the `:sass` filter, but uses the newer
-SCSS syntax to produce CSS output. This filter is implemented using Tilt.
+SCSS syntax to produce CSS output in `<style>` tag. This filter is implemented
+using Tilt.
 
-{#textile-filter}
-### `:textile`
+### `:textile` {#textile-filter}
+
 Parses the filtered text with [Textile](http://www.textism.com/tools/textile).
 Only works if [RedCloth](http://redcloth.org) is installed.
 
@@ -1194,8 +1246,8 @@ the whitespace removal methods allow. There are a few helper methods that are
 useful when dealing with inline content. All these methods take a Haml block to
 modify.
 
-{#surround}
-### surround
+### surround {#surround}
+
 Surrounds a Haml block with text. Expects 1 or 2 string arguments used to
 surround the Haml block. If a second argument is not provided, the first
 argument is used as the second.
@@ -1203,15 +1255,15 @@ argument is used as the second.
     = surround "(", ")" do
       = link_to "learn more", "#"
 
-{#precede}
-### precede
+### precede {#precede}
+
 Prepends a Haml block with text. Expects 1 argument.
 
     = precede "*" do
       %span Required
 
-{#succeed}
-### succeed
+### succeed {#succeed}
+
 Appends a Haml block with text. Expects 1 argument.
 
     Begin by

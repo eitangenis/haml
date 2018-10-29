@@ -1,72 +1,7 @@
+# frozen_string_literal: true
 require 'test_helper'
 
-class ActionView::Base
-  def nested_tag
-    content_tag(:span) {content_tag(:div) {"something"}}
-  end
-
-  def wacky_form
-    form_tag("/foo") {"bar"}
-  end
-end
-
-module Haml::Helpers
-  def something_that_uses_haml_concat
-    haml_concat('foo').to_s
-  end
-
-  def render_something_with_haml_concat
-    haml_concat "<p>"
-  end
-
-  def render_something_with_haml_tag_and_concat
-    haml_tag 'p' do
-      haml_concat '<foo>'
-    end
-  end
-end
-
-class HelperTest < MiniTest::Unit::TestCase
-  Post = Struct.new('Post', :body, :error_field, :errors)
-  class PostErrors
-    def on(name)
-      return unless name == 'error_field'
-      ["Really bad error"]
-    end
-    alias_method :full_messages, :on
-
-    def [](name)
-      on(name) || []
-    end
-  end
-
-  def setup
-    @base = ActionView::Base.new
-    @base.controller = ActionController::Base.new
-    @base.view_paths << File.expand_path("../templates", __FILE__)
-
-    if defined?(ActionController::Response)
-      # This is needed for >=3.0.0
-      @base.controller.response = ActionController::Response.new
-    end
-
-    @base.instance_variable_set('@post', Post.new("Foo bar\nbaz", nil, PostErrors.new))
-  end
-
-  def render(text, options = {})
-    return @base.render :inline => text, :type => :haml if options == :action_view
-    super
-  end
-
-  def test_rendering_with_escapes
-    output = render(<<-HAML, :action_view)
-- render_something_with_haml_concat
-- render_something_with_haml_tag_and_concat
-- render_something_with_haml_concat
-HAML
-    assert_equal("&lt;p&gt;\n<p>\n  <foo>\n</p>\n&lt;p&gt;\n", output)
-  end
-
+class HelperTest < Haml::TestCase
   def test_flatten
     assert_equal("FooBar", Haml::Helpers.flatten("FooBar"))
 
@@ -79,13 +14,15 @@ HAML
   end
 
   def test_list_of_should_render_correctly
-    assert_equal("<li>1</li>\n<li>2</li>\n", render("= list_of([1, 2]) do |i|\n  = i"))
-    assert_equal("<li>[1]</li>\n", render("= list_of([[1]]) do |i|\n  = i.inspect"))
-    assert_equal("<li>\n  <h1>Fee</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fi</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fo</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fum</h1>\n  <p>A word!</p>\n</li>\n",
+    assert_equal("<li>1</li>\n<li>2</li>", render("= list_of([1, 2]) do |i|\n  = i"))
+    assert_equal("<li>[1]</li>", render("= list_of([[1]]) do |i|\n  = i.inspect"))
+    assert_equal("<li>\n  <h1>Fee</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fi</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fo</h1>\n  <p>A word!</p>\n</li>\n<li>\n  <h1>Fum</h1>\n  <p>A word!</p>\n</li>",
       render("= list_of(['Fee', 'Fi', 'Fo', 'Fum']) do |title|\n  %h1= title\n  %p A word!"))
-    assert_equal("<li c='3'>1</li>\n<li c='3'>2</li>\n", render("= list_of([1, 2], {:c => 3}) do |i|\n  = i"))
-    assert_equal("<li c='3'>[1]</li>\n", render("= list_of([[1]], {:c => 3}) do |i|\n  = i.inspect"))
-    assert_equal("<li c='3'>\n  <h1>Fee</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fi</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fo</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fum</h1>\n  <p>A word!</p>\n</li>\n",
+    assert_equal("<li>\n  <f>a\n  \n  a</f>\n</li>\n<li>\n  <f>a\n  \n  a</f>\n</li>",
+      render("= list_of(['Fee', 'Fi']) do |title|\n  %f>= \"a\\n\\na\""))
+    assert_equal("<li c='3'>1</li>\n<li c='3'>2</li>", render("= list_of([1, 2], {:c => 3}) do |i|\n  = i"))
+    assert_equal("<li c='3'>[1]</li>", render("= list_of([[1]], {:c => 3}) do |i|\n  = i.inspect"))
+    assert_equal("<li c='3'>\n  <h1>Fee</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fi</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fo</h1>\n  <p>A word!</p>\n</li>\n<li c='3'>\n  <h1>Fum</h1>\n  <p>A word!</p>\n</li>",
       render("= list_of(['Fee', 'Fi', 'Fo', 'Fum'], {:c => 3}) do |title|\n  %h1= title\n  %p A word!"))
   end
 
@@ -95,15 +32,15 @@ HAML
   end
 
   def test_tabs
-    assert_equal("foo\n  bar\nbaz\n", render("foo\n- tab_up\nbar\n- tab_down\nbaz"))
-    assert_equal("          <p>tabbed</p>\n", render("- buffer.tabulation=5\n%p tabbed"))
+    assert_equal("foo\nbar\nbaz\n", render("foo\n- tab_up\nbar\n- tab_down\nbaz"))
+    assert_equal("<p>tabbed</p>\n", render("- buffer.tabulation=5\n%p tabbed"))
   end
 
   def test_with_tabs
     assert_equal(<<HTML, render(<<HAML))
 Foo
-    Bar
-    Baz
+Bar
+Baz
 Baz
 HTML
 Foo
@@ -120,7 +57,7 @@ HAML
 
     begin
       ActionView::Base.new.render(:inline => "<%= flatten('Foo\\nBar') %>")
-    rescue NoMethodError, Haml::Util.av_template_class(:Error)
+    rescue NoMethodError, ActionView::Template::Error
       proper_behavior = true
     end
     assert(proper_behavior)
@@ -137,78 +74,6 @@ HAML
     assert(Haml::Helpers.action_view?)
   end
 
-  def test_form_tag
-    # This is usually provided by ActionController::Base.
-    def @base.protect_against_forgery?; false; end
-    assert_equal(<<HTML, render(<<HAML, :action_view))
-<form accept-charset="UTF-8" action="foo" method="post">#{rails_form_opener}
-  <p>bar</p>
-  <strong>baz</strong>
-</form>
-HTML
-= form_tag 'foo' do
-  %p bar
-  %strong baz
-HAML
-  end
-
-  def test_pre
-    assert_equal(%(<pre>Foo bar&#x000A;   baz</pre>\n),
-                 render('= content_tag "pre", "Foo bar\n   baz"', :action_view))
-  end
-
-  # Rails >= 3.2.3 adds a newline after opening textarea tags.
-  def self.rails_text_area_helpers_emit_a_newline?
-    major, minor, tiny = ActionPack::VERSION::MAJOR, ActionPack::VERSION::MINOR, ActionPack::VERSION::TINY
-    major == 4 || ((major == 3) && (minor >= 2) && (tiny >= 3))
-  end
-
-  def text_area_content_regex
-    @text_area_content_regex ||= if self.class.rails_text_area_helpers_emit_a_newline?
-      /<(textarea)[^>]*>\n(.*?)<\/\1>/im
-    else
-      /<(textarea)[^>]*>(.*?)<\/\1>/im
-    end
-  end
-
-  def test_text_area_tag
-    output = render('= text_area_tag "body", "Foo\nBar\n Baz\n   Boom"', :action_view)
-    match_data = output.match(text_area_content_regex)
-    assert_equal "Foo&#x000A;Bar&#x000A; Baz&#x000A;   Boom", match_data[2]
-  end
-
-  def test_text_area
-    output = render('= text_area :post, :body', :action_view)
-    match_data = output.match(text_area_content_regex)
-    assert_equal "Foo bar&#x000A;baz", match_data[2]
-  end
-
-  def test_partials_should_not_cause_textareas_to_be_indented
-    # non-indentation of textareas rendered inside partials
-    @base.instance_variable_set('@post', Post.new("Foo", nil, PostErrors.new))
-    output = render(".foo\n  .bar\n    = render '/text_area_helper'", :action_view)
-    match_data = output.match(text_area_content_regex)
-    assert_equal 'Foo', match_data[2]
-  end
-
-  if rails_text_area_helpers_emit_a_newline?
-    def test_textareas_should_prerve_leading_whitespace
-      # leading whitespace preservation
-      @base.instance_variable_set('@post', Post.new("    Foo", nil, PostErrors.new))
-      output = render(".foo\n  = text_area :post, :body", :action_view)
-      match_data = output.match(text_area_content_regex)
-      assert_equal '&#x0020;   Foo', match_data[2]
-    end
-
-    def test_textareas_should_prerve_leading_whitespace_in_partials
-      # leading whitespace in textareas rendered inside partials
-      @base.instance_variable_set('@post', Post.new("    Foo", nil, PostErrors.new))
-      output = render(".foo\n  .bar\n    = render '/text_area_helper'", :action_view)
-      match_data = output.match(text_area_content_regex)
-      assert_equal '&#x0020;   Foo', match_data[2]
-    end
-  end
-
   def test_capture_haml
     assert_equal(<<HTML, render(<<HAML))
 "<p>13</p>\\n"
@@ -217,37 +82,6 @@ HTML
   %p= a
 - end)
 = foo.inspect
-HAML
-  end
-
-  def test_content_tag_block
-    assert_equal(<<HTML.strip, render(<<HAML, :action_view).strip)
-<div><p>bar</p>
-<strong>bar</strong>
-</div>
-HTML
-= content_tag :div do
-  %p bar
-  %strong bar
-HAML
-  end
-
-  def test_content_tag_error_wrapping
-    def @base.protect_against_forgery?; false; end
-    output = render(<<HAML, :action_view)
-= form_for @post, :as => :post, :html => {:class => nil, :id => nil}, :url => '' do |f|
-  = f.label 'error_field'
-HAML
-    fragment = Nokogiri::HTML.fragment(output)
-    refute_nil fragment.css('form div.field_with_errors label[for=post_error_field]').first
-  end
-
-  def test_form_tag_in_helper_with_string_block
-    def @base.protect_against_forgery?; false; end
-    assert_equal(<<HTML, render(<<HAML, :action_view))
-<form accept-charset="UTF-8" action="/foo" method="post">#{rails_form_opener}bar</form>
-HTML
-= wacky_form
 HAML
   end
 
@@ -307,8 +141,12 @@ HAML
     assert_equal("<p id='foo&amp;bar'>baz</p>\n", render("%p{:id => 'foo&bar'} baz", :escape_html => true))
   end
 
-  def test_haml_tag_autoclosed_tags_are_closed
-    assert_equal("<br class='foo' />\n", render("- haml_tag :br, :class => 'foo'"))
+  def test_haml_tag_autoclosed_tags_are_closed_xhtml
+    assert_equal("<br class='foo' />\n", render("- haml_tag :br, :class => 'foo'", :format => :xhtml))
+  end
+
+  def test_haml_tag_autoclosed_tags_are_closed_html
+    assert_equal("<br class='foo'>\n", render("- haml_tag :br, :class => 'foo'", :format => :html5))
   end
 
   def test_haml_tag_with_class_array
@@ -339,7 +177,8 @@ HAML
   end
 
   def test_haml_tag_flags
-    assert_equal("<p />\n", render("- haml_tag :p, :/"))
+    assert_equal("<p />\n", render("- haml_tag :p, :/", :format => :xhtml))
+    assert_equal("<p>\n", render("- haml_tag :p, :/", :format => :html5))
     assert_equal("<p>kumquat</p>\n", render("- haml_tag :p, :< do\n  kumquat"))
 
     assert_raises(Haml::Error) { render("- haml_tag :p, 'foo', :/") }
@@ -365,9 +204,9 @@ HAML
   def test_haml_concat_with_multiline_string
     assert_equal(<<HTML, render(<<HAML))
 <p>
-  foo
-  bar
-  baz
+foo
+bar
+baz
 </p>
 HTML
 %p
@@ -375,10 +214,10 @@ HTML
 HAML
   end
 
-  def test_haml_tag_with_ugly
-    assert_equal(<<HTML, render(<<HAML, :ugly => true))
+  def test_haml_tag
+    assert_equal(<<HTML, render(<<HAML))
 <p>
-<strong>Hi!</strong>
+  <strong>Hi!</strong>
 </p>
 HTML
 - haml_tag :p do
@@ -386,52 +225,55 @@ HTML
 HAML
   end
 
+  def test_haml_tag_if_positive
+    assert_equal(<<HTML, render(<<HAML))
+<div class='conditional'>
+<p>A para</p>
+</div>
+HTML
+- haml_tag_if true, '.conditional' do
+  %p A para
+HAML
+  end
+
+  def test_haml_tag_if_positive_with_attributes
+    assert_equal(<<HTML, render(<<HAML))
+<div class='conditional' foo='bar'>
+<p>A para</p>
+</div>
+HTML
+- haml_tag_if true, '.conditional',  {:foo => 'bar'} do
+  %p A para
+HAML
+  end
+
+  def test_haml_tag_if_negative
+    assert_equal(<<HTML, render(<<HAML))
+<p>A para</p>
+HTML
+- haml_tag_if false, '.conditional' do
+  %p A para
+HAML
+  end
+
+  def test_haml_tag_if_error_return
+    assert_raises(Haml::Error) { render("= haml_tag_if false, '.conditional' do\n  %p Hello") }
+  end
+
   def test_is_haml
     assert(!ActionView::Base.new.is_haml?)
     assert_equal("true\n", render("= is_haml?"))
-    assert_equal("true\n", render("= is_haml?", :action_view))
-    assert_equal("false", @base.render(:inline => '<%= is_haml? %>'))
-    assert_equal("false\n", render("= render :inline => '<%= is_haml? %>'", :action_view))
-  end
-
-  def test_page_class
-    controller = Struct.new(:controller_name, :action_name).new('troller', 'tion')
-    scope = Struct.new(:controller).new(controller)
-    result = render("%div{:class => page_class} MyDiv", :scope => scope)
-    expected = "<div class='troller tion'>MyDiv</div>\n"
-    assert_equal expected, result
-  end
-
-  def test_indented_capture
-    assert_equal("  Foo\n  ", @base.render(:inline => "  <% res = capture do %>\n  Foo\n  <% end %><%= res %>"))
   end
 
   def test_capture_deals_properly_with_collections
-    Haml::Helpers.module_eval do
-      def trc(collection, &block)
-        collection.each do |record|
-          haml_concat capture_haml(record, &block)
-        end
+    obj = Object.new
+    def obj.trc(collection, &block)
+      collection.each do |record|
+        haml_concat capture_haml(record, &block)
       end
     end
 
-    assert_equal("1\n\n2\n\n3\n\n", render("- trc([1, 2, 3]) do |i|\n  = i.inspect"))
-  end
-
-  def test_capture_with_string_block
-    assert_equal("foo\n", render("= capture { 'foo' }", :action_view))
-  end
-
-  def test_capture_with_non_string_value_reurns_nil
-    Haml::Helpers.module_eval do
-      def check_capture_returns_nil(&block)
-        contents = capture(&block)
-
-        contents << "ERROR" if contents
-      end
-    end
-
-    assert_equal("\n", render("= check_capture_returns_nil { 2 }", :action_view))
+    assert_equal("1\n\n2\n\n3\n\n", render("- trc([1, 2, 3]) do |i|\n  = i.inspect", scope: obj))
   end
 
   def test_find_and_preserve_with_block
@@ -445,7 +287,7 @@ HAML
   end
 
   def test_preserve_with_block
-    assert_equal("<pre>Foo&#x000A;Bar</pre>&#x000A;Foo&#x000A;Bar\n",
+    assert_equal("<pre>Foo&#x000A;Bar</pre>&#x000A;Foo&#x000A;Bar",
                  render("= preserve do\n  %pre\n    Foo\n    Bar\n  Foo\n  Bar"))
   end
 
@@ -469,10 +311,6 @@ HAML
     assert_equal("false\n", render("= non_haml { is_haml? }"))
   end
 
-  def test_content_tag_nested
-    assert_equal "<span><div>something</div></span>", render("= nested_tag", :action_view).strip
-  end
-
   def test_error_return
     assert_raises(Haml::Error, <<MESSAGE) {render("= haml_concat 'foo'")}
 haml_concat outputs directly to the Haml template.
@@ -482,46 +320,22 @@ MESSAGE
   end
 
   def test_error_return_line
-    render("%p foo\n= haml_concat 'foo'\n%p bar")
+    render("%p foo\n= haml_concat('foo').to_s\n%p bar")
     assert false, "Expected Haml::Error"
   rescue Haml::Error => e
-    assert_equal 2, e.backtrace[1].scan(/:(\d+)/).first.first.to_i
+    assert_equal 2, e.backtrace[0].scan(/:(\d+)/).first.first.to_i
   end
 
   def test_error_return_line_in_helper
-    render("- something_that_uses_haml_concat")
+    obj = Object.new
+    def obj.something_that_uses_haml_concat
+      haml_concat('foo').to_s
+    end
+
+    render("- something_that_uses_haml_concat", scope: obj)
     assert false, "Expected Haml::Error"
   rescue Haml::Error => e
-    assert_equal 15, e.backtrace[0].scan(/:(\d+)/).first.first.to_i
-  end
-
-  class ActsLikeTag
-    # We want to be able to have people include monkeypatched ActionView helpers
-    # without redefining is_haml?.
-    # This is accomplished via Object#is_haml?, and this is a test for it.
-    include ActionView::Helpers::TagHelper
-    def to_s
-      content_tag :p, 'some tag content'
-    end
-  end
-
-  def test_random_class_includes_tag_helper
-    assert_equal "<p>some tag content</p>", ActsLikeTag.new.to_s
-  end
-
-  def test_capture_with_nuke_outer
-    assert_equal "<div></div>\n*<div>hi there!</div>\n", render(<<HAML)
-%div
-= precede("*") do
-  %div> hi there!
-HAML
-
-    assert_equal "<div></div>\n*<div>hi there!</div>\n", render(<<HAML)
-%div
-= precede("*") do
-  = "  "
-  %div> hi there!
-HAML
+    assert_equal __LINE__ - 6, e.backtrace[0].scan(/:(\d+)/).first.first.to_i
   end
 
   def test_html_escape
@@ -560,7 +374,7 @@ HAML
 
   def test_escape_once_leaves_numeric_references
     assert_equal "&quot;&gt;&lt;&amp; &#160;", Haml::Helpers.escape_once('"><& &#160;') #decimal
-    #assert_equal "&quot;&gt;&lt;&amp; &#x00a0;", Haml::Helpers.escape_once('"><& &#x00a0;') #hexadecimal
+    assert_equal "&quot;&gt;&lt;&amp; &#x00a0;", Haml::Helpers.escape_once('"><& &#x00a0;') #hexadecimal
   end
 
   def test_escape_once_encoding
@@ -572,6 +386,36 @@ HAML
     $stderr = old_stderr
   end
 
+  def test_html_attrs_xhtml
+    assert_equal("<html lang='en-US' xml:lang='en-US' xmlns='http://www.w3.org/1999/xhtml'></html>\n",
+                  render("%html{html_attrs}", :format => :xhtml))
+  end
+
+  def test_html_attrs_html4
+    assert_equal("<html lang='en-US'></html>\n",
+                  render("%html{html_attrs}", :format => :html4))
+  end
+
+  def test_html_attrs_html5
+    assert_equal("<html lang='en-US'></html>\n",
+                  render("%html{html_attrs}", :format => :html5))
+  end
+
+  def test_html_attrs_xhtml_other_lang
+    assert_equal("<html lang='es-AR' xml:lang='es-AR' xmlns='http://www.w3.org/1999/xhtml'></html>\n",
+                  render("%html{html_attrs('es-AR')}", :format => :xhtml))
+  end
+
+  def test_html_attrs_html4_other_lang
+    assert_equal("<html lang='es-AR'></html>\n",
+                  render("%html{html_attrs('es-AR')}", :format => :html4))
+  end
+
+  def test_html_attrs_html5_other_lang
+    assert_equal("<html lang='es-AR'></html>\n",
+                  render("%html{html_attrs('es-AR')}", :format => :html5))
+  end
+
   def test_escape_once_should_work_on_frozen_strings
     begin
       Haml::Helpers.escape_once('foo'.freeze)
@@ -581,4 +425,3 @@ HAML
   end
 
 end
-

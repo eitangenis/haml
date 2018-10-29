@@ -1,15 +1,19 @@
-source 'https://rubygems.org'
+source "https://rubygems.org"
 gemspec
 
+gem "m"
+gem "pry"
+
 group :docs do
-  gem "yard", "~> 0.8.0"
-  gem "maruku"
+  gem "yard"
+  gem "kramdown"
+  gem "sass"
 end
 
 platform :mri do
   gem "ruby-prof"
 end
 
-platform :mri_19 do
+platform :mri_21 do
   gem "simplecov"
 end

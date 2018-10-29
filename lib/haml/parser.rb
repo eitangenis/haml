@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'strscan'
 
 module Haml
@@ -71,7 +72,7 @@ module Haml
     #     foo.each do | bar |
     #       = bar
     #
-    BLOCK_WITH_SPACES = /do[\s]*\|[\s]*[^\|]*[\s]+\|\z/
+    BLOCK_WITH_SPACES = /do\s*\|\s*[^\|]*\s+\|\z/
 
     MID_BLOCK_KEYWORDS = %w[else elsif rescue ensure end when]
     START_BLOCK_KEYWORDS = %w[if begin case unless]
@@ -80,17 +81,16 @@ module Haml
     BLOCK_KEYWORD_REGEX = /^-?\s*(?:(#{MID_BLOCK_KEYWORDS.join('|')})|#{START_BLOCK_KEYWORD_REGEX.source})\b/
 
     # The Regex that matches a Doctype command.
-    DOCTYPE_REGEX = /(\d(?:\.\d)?)?[\s]*([a-z]*)\s*([^ ]+)?/i
+    DOCTYPE_REGEX = /(\d(?:\.\d)?)?\s*([a-z]*)\s*([^ ]+)?/i
 
     # The Regex that matches a literal string or symbol value
-    LITERAL_VALUE_REGEX = /:(\w*)|(["'])((?!\\|\#{|\#@|\#\$|\2).|\\.)*\2/
+    LITERAL_VALUE_REGEX = /:(\w*)|(["'])((?!\\|\#\{|\#@|\#\$|\2).|\\.)*\2/
 
-    def initialize(template, options)
-      # :eod is a special end-of-document marker
-      @template           = (template.rstrip).split(/\r\n|\r|\n/) + [:eod, :eod]
-      @options            = options
-      @flat               = false
-      @index              = 0
+    ID_KEY    = 'id'.freeze
+    CLASS_KEY = 'class'.freeze
+
+    def initialize(options)
+      @options = Options.wrap(options)
       # Record the indent levels of "if" statements to validate the subsequent
       # elsif and else statements are indented at the appropriate level.
       @script_level_stack = []
@@ -98,15 +98,27 @@ module Haml
       @template_tabs      = 0
     end
 
-    def parse
+    def call(template)
+      match = template.rstrip.scan(/(([ \t]+)?(.*?))(?:\Z|\r\n|\r|\n)/m)
+      # discard the last match which is always blank
+      match.pop
+      @template = match.each_with_index.map do |(full, whitespace, text), index|
+        Line.new(whitespace, text.rstrip, full, index, self, false)
+      end
+      # Append special end-of-document marker
+      @template << Line.new(nil, '-#', '-#', @template.size, self, true)
+
       @root = @parent = ParseNode.new(:root)
-      @haml_comment = false
+      @flat = false
+      @filter_buffer = nil
       @indentation = nil
       @line = next_line
 
       raise SyntaxError.new(Error.message(:indenting_at_start), @line.index) if @line.tabs != 0
 
-      while next_line
+      loop do
+        next_line
+
         process_indent(@line) unless @line.text.empty?
 
         if flat?
@@ -118,61 +130,66 @@ module Haml
         end
 
         @tab_up = nil
-        process_line(@line.text, @line.index) unless @line.text.empty? || @haml_comment
-        if @parent.type != :haml_comment && (block_opened? || @tab_up)
+        process_line(@line) unless @line.text.empty?
+        if block_opened? || @tab_up
           @template_tabs += 1
           @parent = @parent.children.last
         end
 
-        if !@haml_comment && !flat? && @next_line.tabs - @line.tabs > 1
+        if !flat? && @next_line.tabs - @line.tabs > 1
           raise SyntaxError.new(Error.message(:deeper_indenting, @next_line.tabs - @line.tabs), @next_line.index)
         end
 
         @line = @next_line
       end
-
       # Close all the open tags
       close until @parent.type == :root
       @root
     rescue Haml::Error => e
-      e.backtrace.unshift "#{@options[:filename]}:#{(e.line ? e.line + 1 : @index) + @options[:line] - 1}"
+      e.backtrace.unshift "#{@options.filename}:#{(e.line ? e.line + 1 : @line.index + 1) + @options.line - 1}"
       raise
     end
 
+    def compute_tabs(line)
+      return 0 if line.text.empty? || !line.whitespace
+
+      if @indentation.nil?
+        @indentation = line.whitespace
+
+        if @indentation.include?(?\s) && @indentation.include?(?\t)
+          raise SyntaxError.new(Error.message(:cant_use_tabs_and_spaces), line.index)
+        end
+
+        @flat_spaces = @indentation * (@template_tabs+1) if flat?
+        return 1
+      end
+
+      tabs = line.whitespace.length / @indentation.length
+      return tabs if line.whitespace == @indentation * tabs
+      return @template_tabs + 1 if flat? && line.whitespace =~ /^#{@flat_spaces}/
+
+      message = Error.message(:inconsistent_indentation,
+        human_indentation(line.whitespace),
+        human_indentation(@indentation)
+      )
+      raise SyntaxError.new(message, line.index)
+    end
 
     private
 
     # @private
-    class Line < Struct.new(:text, :unstripped, :full, :index, :compiler, :eod)
+    class Line < Struct.new(:whitespace, :text, :full, :index, :parser, :eod)
       alias_method :eod?, :eod
 
       # @private
       def tabs
-        line = self
-        @tabs ||= compiler.instance_eval do
-          break 0 if line.text.empty? || !(whitespace = line.full[/^\s+/])
+        @tabs ||= parser.compute_tabs(self)
+      end
 
-          if @indentation.nil?
-            @indentation = whitespace
-
-            if @indentation.include?(?\s) && @indentation.include?(?\t)
-              raise SyntaxError.new(Error.message(:cant_use_tabs_and_spaces), line.index)
-            end
-
-            @flat_spaces = @indentation * (@template_tabs+1) if flat?
-            break 1
-          end
-
-          tabs = whitespace.length / @indentation.length
-          break tabs if whitespace == @indentation * tabs
-          break @template_tabs + 1 if flat? && whitespace =~ /^#{@flat_spaces}/
-
-          message = Error.message(:inconsistent_indentation,
-            Haml::Util.human_indentation(whitespace),
-            Haml::Util.human_indentation(@indentation)
-          )
-          raise SyntaxError.new(message, line.index)
-        end
+      def strip!(from)
+        self.text = text[from..-1]
+        self.text.lstrip!
+        self
       end
     end
 
@@ -184,9 +201,31 @@ module Haml
       end
 
       def inspect
-        text = "(#{type} #{value.inspect}"
-        children.each {|c| text << "\n" << c.inspect.gsub(/^/, "  ")}
-        text + ")"
+        %Q[(#{type} #{value.inspect}#{children.each_with_object('') {|c, s| s << "\n#{c.inspect.gsub!(/^/, '  ')}"}})]
+      end
+    end
+
+    # @param [String] new - Hash literal including dynamic values.
+    # @param [String] old - Hash literal including dynamic values or Ruby literal of multiple Hashes which MUST be interpreted as method's last arguments.
+    class DynamicAttributes < Struct.new(:new, :old)
+      def old=(value)
+        unless value =~ /\A{.*}\z/m
+          raise ArgumentError.new('Old attributes must start with "{" and end with "}"')
+        end
+        super
+      end
+
+      # This will be a literal for Haml::Buffer#attributes's last argument, `attributes_hashes`.
+      def to_literal
+        [new, stripped_old].compact.join(', ')
+      end
+
+      private
+
+      # For `%foo{ { foo: 1 }, bar: 2 }`, :old is "{ { foo: 1 }, bar: 2 }" and this method returns " { foo: 1 }, bar: 2 " for last argument.
+      def stripped_old
+        return nil if old.nil?
+        old.sub!(/\A{/, '').sub!(/}\z/m, '')
       end
     end
 
@@ -195,44 +234,55 @@ module Haml
       return unless line.tabs <= @template_tabs && @template_tabs > 0
 
       to_close = @template_tabs - line.tabs
-      to_close.times {|i| close unless to_close - 1 - i == 0 && mid_block_keyword?(line.text)}
+      to_close.times {|i| close unless to_close - 1 - i == 0 && continuation_script?(line.text)}
+    end
+
+    def continuation_script?(text)
+      text[0] == SILENT_SCRIPT && mid_block_keyword?(text)
+    end
+
+    def mid_block_keyword?(text)
+      MID_BLOCK_KEYWORDS.include?(block_keyword(text))
     end
 
     # Processes a single line of Haml.
     #
     # This method doesn't return anything; it simply processes the line and
     # adds the appropriate code to `@precompiled`.
-    def process_line(text, index)
-      @index = index + 1
-
-      case text[0]
-      when DIV_CLASS; push div(text)
+    def process_line(line)
+      case line.text[0]
+      when DIV_CLASS; push div(line)
       when DIV_ID
-        return push plain(text) if text[1] == ?{
-        push div(text)
-      when ELEMENT; push tag(text)
-      when COMMENT; push comment(text[1..-1].strip)
+        return push plain(line) if %w[{ @ $].include?(line.text[1])
+        push div(line)
+      when ELEMENT; push tag(line)
+      when COMMENT; push comment(line.text[1..-1].lstrip)
       when SANITIZE
-        return push plain(text[3..-1].strip, :escape_html) if text[1..2] == "=="
-        return push script(text[2..-1].strip, :escape_html) if text[1] == SCRIPT
-        return push flat_script(text[2..-1].strip, :escape_html) if text[1] == FLAT_SCRIPT
-        return push plain(text[1..-1].strip, :escape_html) if text[1] == ?\s
-        push plain(text)
+        return push plain(line.strip!(3), :escape_html) if line.text[1, 2] == '=='
+        return push script(line.strip!(2), :escape_html) if line.text[1] == SCRIPT
+        return push flat_script(line.strip!(2), :escape_html) if line.text[1] == FLAT_SCRIPT
+        return push plain(line.strip!(1), :escape_html) if line.text[1] == ?\s || line.text[1..2] == '#{'
+        push plain(line)
       when SCRIPT
-        return push plain(text[2..-1].strip) if text[1] == SCRIPT
-        push script(text[1..-1])
-      when FLAT_SCRIPT; push flat_script(text[1..-1])
-      when SILENT_SCRIPT; push silent_script(text)
-      when FILTER; push filter(text[1..-1].downcase)
+        return push plain(line.strip!(2)) if line.text[1] == SCRIPT
+        line.text = line.text[1..-1]
+        push script(line)
+      when FLAT_SCRIPT; push flat_script(line.strip!(1))
+      when SILENT_SCRIPT
+        return push haml_comment(line.text[2..-1]) if line.text[1] == SILENT_COMMENT
+        push silent_script(line)
+      when FILTER; push filter(line.text[1..-1].downcase)
       when DOCTYPE
-        return push doctype(text) if text[0...3] == '!!!'
-        return push plain(text[3..-1].strip, false) if text[1..2] == "=="
-        return push script(text[2..-1].strip, false) if text[1] == SCRIPT
-        return push flat_script(text[2..-1].strip, false) if text[1] == FLAT_SCRIPT
-        return push plain(text[1..-1].strip, false) if text[1] == ?\s
-        push plain(text)
-      when ESCAPE; push plain(text[1..-1])
-      else; push plain(text)
+        return push doctype(line.text) if line.text[0, 3] == '!!!'
+        return push plain(line.strip!(3), false) if line.text[1, 2] == '=='
+        return push script(line.strip!(2), false) if line.text[1] == SCRIPT
+        return push flat_script(line.strip!(2), false) if line.text[1] == FLAT_SCRIPT
+        return push plain(line.strip!(1), false) if line.text[1] == ?\s || line.text[1..2] == '#{'
+        push plain(line)
+      when ESCAPE
+        line.text = line.text[1..-1]
+        push plain(line)
+      else; push plain(line)
       end
     end
 
@@ -241,52 +291,47 @@ module Haml
       keyword[0] || keyword[1]
     end
 
-    def mid_block_keyword?(text)
-      MID_BLOCK_KEYWORDS.include?(block_keyword(text))
-    end
-
     def push(node)
       @parent.children << node
       node.parent = @parent
     end
 
-    def plain(text, escape_html = nil)
+    def plain(line, escape_html = nil)
       if block_opened?
         raise SyntaxError.new(Error.message(:illegal_nesting_plain), @next_line.index)
       end
 
-      unless contains_interpolation?(text)
-        return ParseNode.new(:plain, @index, :text => text)
+      unless contains_interpolation?(line.text)
+        return ParseNode.new(:plain, line.index + 1, :text => line.text)
       end
 
-      escape_html = @options[:escape_html] if escape_html.nil?
-      script(unescape_interpolation(text, escape_html), false)
+      escape_html = @options.escape_html if escape_html.nil?
+      line.text = unescape_interpolation(line.text, escape_html)
+      script(line, false)
     end
 
-    def script(text, escape_html = nil, preserve = false)
-      raise SyntaxError.new(Error.message(:no_ruby_code, '=')) if text.empty?
-      text = handle_ruby_multiline(text)
-      escape_html = @options[:escape_html] if escape_html.nil?
+    def script(line, escape_html = nil, preserve = false)
+      raise SyntaxError.new(Error.message(:no_ruby_code, '=')) if line.text.empty?
+      line = handle_ruby_multiline(line)
+      escape_html = @options.escape_html if escape_html.nil?
 
-      keyword = block_keyword(text)
+      keyword = block_keyword(line.text)
       check_push_script_stack(keyword)
 
-      ParseNode.new(:script, @index, :text => text, :escape_html => escape_html,
+      ParseNode.new(:script, line.index + 1, :text => line.text, :escape_html => escape_html,
         :preserve => preserve, :keyword => keyword)
     end
 
-    def flat_script(text, escape_html = nil)
-      raise SyntaxError.new(Error.message(:no_ruby_code, '~')) if text.empty?
-      script(text, escape_html, :preserve)
+    def flat_script(line, escape_html = nil)
+      raise SyntaxError.new(Error.message(:no_ruby_code, '~')) if line.text.empty?
+      script(line, escape_html, :preserve)
     end
 
-    def silent_script(text)
-      return haml_comment(text[2..-1]) if text[1] == SILENT_COMMENT
+    def silent_script(line)
+      raise SyntaxError.new(Error.message(:no_end), line.index) if line.text[1..-1].strip == 'end'
 
-      raise SyntaxError.new(Error.message(:no_end), @index - 1) if text[1..-1].strip == "end"
-
-      text = handle_ruby_multiline(text)
-      keyword = block_keyword(text)
+      line = handle_ruby_multiline(line)
+      keyword = block_keyword(line.text)
 
       check_push_script_stack(keyword)
 
@@ -308,8 +353,8 @@ module Haml
         end
       end
 
-      ParseNode.new(:silent_script, @index,
-        :text => text[1..-1], :keyword => keyword)
+      ParseNode.new(:silent_script, @line.index + 1,
+        :text => line.text[1..-1], :keyword => keyword)
     end
 
     def check_push_script_stack(keyword)
@@ -323,18 +368,25 @@ module Haml
     end
 
     def haml_comment(text)
-      @haml_comment = block_opened?
-      ParseNode.new(:haml_comment, @index, :text => text)
+      if filter_opened?
+        @flat = true
+        @filter_buffer = String.new
+        @filter_buffer << "#{text}\n" unless text.empty?
+        text = @filter_buffer
+        # If we don't know the indentation by now, it'll be set in Line#tabs
+        @flat_spaces = @indentation * (@template_tabs+1) if @indentation
+      end
+
+      ParseNode.new(:haml_comment, @line.index + 1, :text => text)
     end
 
     def tag(line)
       tag_name, attributes, attributes_hashes, object_ref, nuke_outer_whitespace,
-        nuke_inner_whitespace, action, value, last_line = parse_tag(line)
+        nuke_inner_whitespace, action, value, last_line = parse_tag(line.text)
 
-      preserve_tag = @options[:preserve].include?(tag_name)
+      preserve_tag = @options.preserve.include?(tag_name)
       nuke_inner_whitespace ||= preserve_tag
-      preserve_tag = false if @options[:ugly]
-      escape_html = (action == '&' || (action != '!' && @options[:escape_html]))
+      escape_html = (action == '&' || (action != '!' && @options.escape_html))
 
       case action
       when '/'; self_closing = true
@@ -369,21 +421,19 @@ module Haml
       end
 
       attributes = Parser.parse_class_and_id(attributes)
-      attributes_list = []
+      dynamic_attributes = DynamicAttributes.new
 
       if attributes_hashes[:new]
         static_attributes, attributes_hash = attributes_hashes[:new]
-        Buffer.merge_attrs(attributes, static_attributes) if static_attributes
-        attributes_list << attributes_hash
+        AttributeBuilder.merge_attributes!(attributes, static_attributes) if static_attributes
+        dynamic_attributes.new = attributes_hash
       end
 
       if attributes_hashes[:old]
         static_attributes = parse_static_hash(attributes_hashes[:old])
-        Buffer.merge_attrs(attributes, static_attributes) if static_attributes
-        attributes_list << attributes_hashes[:old] unless static_attributes || @options[:suppress_eval]
+        AttributeBuilder.merge_attributes!(attributes, static_attributes) if static_attributes
+        dynamic_attributes.old = attributes_hashes[:old] unless static_attributes || @options.suppress_eval
       end
-
-      attributes_list.compact!
 
       raise SyntaxError.new(Error.message(:illegal_nesting_self_closing), @next_line.index) if block_opened? && self_closing
       raise SyntaxError.new(Error.message(:no_ruby_code, action), last_line - 1) if parse && value.empty?
@@ -393,56 +443,70 @@ module Haml
         raise SyntaxError.new(Error.message(:illegal_nesting_line, tag_name), @next_line.index)
       end
 
-      self_closing ||= !!(!block_opened? && value.empty? && @options[:autoclose].any? {|t| t === tag_name})
+      self_closing ||= !!(!block_opened? && value.empty? && @options.autoclose.any? {|t| t === tag_name})
       value = nil if value.empty? && (block_opened? || self_closing)
-      value = handle_ruby_multiline(value) if parse
+      line.text = value
+      line = handle_ruby_multiline(line) if parse
 
-      ParseNode.new(:tag, @index, :name => tag_name, :attributes => attributes,
-        :attributes_hashes => attributes_list, :self_closing => self_closing,
+      ParseNode.new(:tag, line.index + 1, :name => tag_name, :attributes => attributes,
+        :dynamic_attributes => dynamic_attributes, :self_closing => self_closing,
         :nuke_inner_whitespace => nuke_inner_whitespace,
         :nuke_outer_whitespace => nuke_outer_whitespace, :object_ref => object_ref,
         :escape_html => escape_html, :preserve_tag => preserve_tag,
-        :preserve_script => preserve_script, :parse => parse, :value => value)
+        :preserve_script => preserve_script, :parse => parse, :value => line.text)
     end
 
     # Renders a line that creates an XHTML tag and has an implicit div because of
     # `.` or `#`.
     def div(line)
-      tag('%div' + line)
+      line.text = "%div#{line.text}"
+      tag(line)
     end
 
     # Renders an XHTML comment.
-    def comment(line)
-      conditional, line = balance(line, ?[, ?]) if line[0] == ?[
-      line.strip!
-      conditional << ">" if conditional
+    def comment(text)
+      if text[0..1] == '!['
+        revealed = true
+        text = text[1..-1]
+      else
+        revealed = false
+      end
 
-      if block_opened? && !line.empty?
+      conditional, text = balance(text, ?[, ?]) if text[0] == ?[
+      text.strip!
+
+      if contains_interpolation?(text)
+        parse = true
+        text = unescape_interpolation(text)
+      else
+        parse = false
+      end
+
+      if block_opened? && !text.empty?
         raise SyntaxError.new(Haml::Error.message(:illegal_nesting_content), @next_line.index)
       end
 
-      ParseNode.new(:comment, @index, :conditional => conditional, :text => line)
+      ParseNode.new(:comment, @line.index + 1, :conditional => conditional, :text => text, :revealed => revealed, :parse => parse)
     end
 
     # Renders an XHTML doctype or XML shebang.
-    def doctype(line)
+    def doctype(text)
       raise SyntaxError.new(Error.message(:illegal_nesting_header), @next_line.index) if block_opened?
-      version, type, encoding = line[3..-1].strip.downcase.scan(DOCTYPE_REGEX)[0]
-      ParseNode.new(:doctype, @index, :version => version, :type => type, :encoding => encoding)
+      version, type, encoding = text[3..-1].strip.downcase.scan(DOCTYPE_REGEX)[0]
+      ParseNode.new(:doctype, @line.index + 1, :version => version, :type => type, :encoding => encoding)
     end
 
     def filter(name)
       raise Error.new(Error.message(:invalid_filter_name, name)) unless name =~ /^\w+$/
 
-      @filter_buffer = String.new
-
       if filter_opened?
         @flat = true
+        @filter_buffer = String.new
         # If we don't know the indentation by now, it'll be set in Line#tabs
         @flat_spaces = @indentation * (@template_tabs+1) if @indentation
       end
 
-      ParseNode.new(:filter, @index, :name => name, :text => @filter_buffer)
+      ParseNode.new(:filter, @line.index + 1, :name => name, :text => @filter_buffer)
     end
 
     def close
@@ -452,13 +516,17 @@ module Haml
     end
 
     def close_filter(_)
-      @flat = false
-      @flat_spaces = nil
-      @filter_buffer = nil
+      close_flat_section
     end
 
     def close_haml_comment(_)
-      @haml_comment = false
+      close_flat_section
+    end
+
+    def close_flat_section
+      @flat = false
+      @flat_spaces = nil
+      @filter_buffer = nil
     end
 
     def close_silent_script(node)
@@ -485,23 +553,33 @@ module Haml
     # that can then be merged with another attributes hash.
     def self.parse_class_and_id(list)
       attributes = {}
-      list.scan(/([#.])([-:_a-zA-Z0-9]+)/) do |type, property|
+      return attributes if list.empty?
+
+      list.scan(/([#.])([-:_a-zA-Z0-9\@]+)/) do |type, property|
         case type
         when '.'
-          if attributes['class']
-            attributes['class'] += " "
+          if attributes[CLASS_KEY]
+            attributes[CLASS_KEY] += " "
           else
-            attributes['class'] = ""
+            attributes[CLASS_KEY] = ""
           end
-          attributes['class'] += property
-        when '#'; attributes['id'] = property
+          attributes[CLASS_KEY] += property
+        when '#'; attributes[ID_KEY] = property
         end
       end
       attributes
     end
 
+    # This method doesn't use Haml::AttributeParser because currently it depends on Ripper and Rubinius doesn't provide it.
+    # Ideally this logic should be placed in Haml::AttributeParser instead of here and this method should use it.
+    #
+    # @param  [String] text - Hash literal or text inside old attributes
+    # @return [Hash,nil] - Return nil if text is not static Hash literal
     def parse_static_hash(text)
       attributes = {}
+      return attributes if text.empty?
+
+      text = text[1...-1] # strip brackets
       scanner = StringScanner.new(text)
       scanner.scan(/\s+/)
       until scanner.eos?
@@ -515,20 +593,20 @@ module Haml
     end
 
     # Parses a line into tag_name, attributes, attributes_hash, object_ref, action, value
-    def parse_tag(line)
-      match = line.scan(/%([-:\w]+)([-:\w\.\#]*)(.*)/)[0]
-      raise SyntaxError.new(Error.message(:invalid_tag, line)) unless match
+    def parse_tag(text)
+      match = text.scan(/%([-:\w]+)([-:\w.#\@]*)(.+)?/)[0]
+      raise SyntaxError.new(Error.message(:invalid_tag, text)) unless match
 
       tag_name, attributes, rest = match
 
-      if attributes =~ /[\.#](\.|#|\z)/
+      if !attributes.empty? && (attributes =~ /[.#](\.|#|\z)/)
         raise SyntaxError.new(Error.message(:illegal_element))
       end
 
       new_attributes_hash = old_attributes_hash = last_line = nil
-      object_ref = "nil"
+      object_ref = :nil
       attributes_hashes = {}
-      while rest
+      while rest && !rest.empty?
         case rest[0]
         when ?{
           break if old_attributes_hash
@@ -539,38 +617,46 @@ module Haml
           new_attributes_hash, rest, last_line = parse_new_attributes(rest)
           attributes_hashes[:new] = new_attributes_hash
         when ?[
-          break unless object_ref == "nil"
+          break unless object_ref == :nil
           object_ref, rest = balance(rest, ?[, ?])
         else; break
         end
       end
 
-      if rest
+      if rest && !rest.empty?
         nuke_whitespace, action, value = rest.scan(/(<>|><|[><])?([=\/\~&!])?(.*)?/)[0]
-        nuke_whitespace ||= ''
-        nuke_outer_whitespace = nuke_whitespace.include? '>'
-        nuke_inner_whitespace = nuke_whitespace.include? '<'
+        if nuke_whitespace
+          nuke_outer_whitespace = nuke_whitespace.include? '>'
+          nuke_inner_whitespace = nuke_whitespace.include? '<'
+        end
       end
 
-      if @options[:remove_whitespace]
+      if @options.remove_whitespace
         nuke_outer_whitespace = true
         nuke_inner_whitespace = true
       end
 
-      value = value.to_s.strip
+      if value.nil?
+        value = ''
+      else
+        value.strip!
+      end
       [tag_name, attributes, attributes_hashes, object_ref, nuke_outer_whitespace,
-       nuke_inner_whitespace, action, value, last_line || @index]
+       nuke_inner_whitespace, action, value, last_line || @line.index + 1]
     end
 
-    def parse_old_attributes(line)
-      line = line.dup
-      last_line = @index
+    # @return [String] attributes_hash - Hash literal starting with `{` and ending with `}`
+    # @return [String] rest
+    # @return [Integer] last_line
+    def parse_old_attributes(text)
+      text = text.dup
+      last_line = @line.index + 1
 
       begin
-        attributes_hash, rest = balance(line, ?{, ?})
+        attributes_hash, rest = balance(text, ?{, ?})
       rescue SyntaxError => e
-        if line.strip[-1] == ?, && e.message == Error.message(:unbalanced_brackets)
-          line << "\n" << @next_line.text
+        if text.strip[-1] == ?, && e.message == Error.message(:unbalanced_brackets)
+          text << "\n#{@next_line.text}"
           last_line += 1
           next_line
           retry
@@ -579,14 +665,15 @@ module Haml
         raise e
       end
 
-      attributes_hash = attributes_hash[1...-1] if attributes_hash
       return attributes_hash, rest, last_line
     end
 
-    def parse_new_attributes(line)
-      line = line.dup
-      scanner = StringScanner.new(line)
-      last_line = @index
+    # @return [Array<Hash,String,nil>] - [static_attributes (Hash), dynamic_attributes (nil or String starting with `{` and ending with `}`)]
+    # @return [String] rest
+    # @return [Integer] last_line
+    def parse_new_attributes(text)
+      scanner = StringScanner.new(text)
+      last_line = @line.index + 1
       attributes = {}
 
       scanner.scan(/\(\s*/)
@@ -595,14 +682,15 @@ module Haml
         break if name.nil?
 
         if name == false
-          text = (Haml::Util.balance(line, ?(, ?)) || [line]).first
+          scanned = Haml::Util.balance(text, ?(, ?))
+          text = scanned ? scanned.first : text
           raise Haml::SyntaxError.new(Error.message(:invalid_attribute_list, text.inspect), last_line - 1)
         end
         attributes[name] = value
         scanner.scan(/\s*/)
 
         if scanner.eos?
-          line << " " << @next_line.text
+          text << " #{@next_line.text}"
           last_line += 1
           next_line
           scanner.scan(/\s*/)
@@ -610,12 +698,12 @@ module Haml
       end
 
       static_attributes = {}
-      dynamic_attributes = "{"
+      dynamic_attributes = "{".dup
       attributes.each do |name, (type, val)|
         if type == :static
           static_attributes[name] = val
         else
-          dynamic_attributes << inspect_obj(name) << " => " << val << ","
+          dynamic_attributes << "#{inspect_obj(name)} => #{val},"
         end
       end
       dynamic_attributes << "}"
@@ -650,35 +738,16 @@ module Haml
 
       return name, [:static, content.first[1]] if content.size == 1
       return name, [:dynamic,
-        '"' + content.map {|(t, v)| t == :str ? inspect_obj(v)[1...-1] : "\#{#{v}}"}.join + '"']
-    end
-
-    def raw_next_line
-      text = @template.shift
-      return unless text
-
-      index = @template_index
-      @template_index += 1
-
-      return text, index
+        %!"#{content.each_with_object(''.dup) {|(t, v), s| s << (t == :str ? inspect_obj(v)[1...-1] : "\#{#{v}}")}}"!]
     end
 
     def next_line
-      text, index = raw_next_line
-      return unless text
-
-      # :eod is a special end-of-document marker
-      line =
-        if text == :eod
-          Line.new '-#', '-#', '-#', index, self, true
-        else
-          Line.new text.strip, text.lstrip.chomp, text, index, self, false
-        end
+      line = @template.shift || raise(StopIteration)
 
       # `flat?' here is a little outdated,
       # so we have to manually check if either the previous or current line
       # closes the flat block, as well as whether a new block is opened.
-      line_defined = instance_variable_defined?('@line')
+      line_defined = instance_variable_defined?(:@line)
       @line.tabs if line_defined
       unless (flat? && !closes_flat?(line) && !closes_flat?(@line)) ||
           (line_defined && @line.text[0] == ?: && line.full =~ %r[^#{@line.full[/^\s+/]}\s])
@@ -694,21 +763,17 @@ module Haml
       line && !line.text.empty? && line.full !~ /^#{@flat_spaces}/
     end
 
-    def un_next_line(line)
-      @template.unshift line
-      @template_index -= 1
-    end
-
     def handle_multiline(line)
       return unless is_multiline?(line.text)
       line.text.slice!(-1)
-      while new_line = raw_next_line.first
-        break if new_line == :eod
-        next if new_line.strip.empty?
-        break unless is_multiline?(new_line.strip)
-        line.text << new_line.strip[0...-1]
+      loop do
+        new_line = @template.first
+        break if new_line.eod?
+        next @template.shift if new_line.text.strip.empty?
+        break unless is_multiline?(new_line.text.strip)
+        line.text << new_line.text.strip[0...-1]
+        @template.shift
       end
-      un_next_line new_line
     end
 
     # Checks whether or not `line` is in a multiline sequence.
@@ -716,18 +781,18 @@ module Haml
       text && text.length > 1 && text[-1] == MULTILINE_CHAR_VALUE && text[-2] == ?\s && text !~ BLOCK_WITH_SPACES
     end
 
-    def handle_ruby_multiline(text)
-      text = text.rstrip
-      return text unless is_ruby_multiline?(text)
-      un_next_line @next_line.full
+    def handle_ruby_multiline(line)
+      line.text.rstrip!
+      return line unless is_ruby_multiline?(line.text)
       begin
-        new_line = raw_next_line.first
-        break if new_line == :eod
-        next if new_line.strip.empty?
-        text << " " << new_line.strip
-      end while is_ruby_multiline?(new_line.strip)
+        # Use already fetched @next_line in the first loop. Otherwise, fetch next
+        new_line = new_line.nil? ? @next_line : @template.shift
+        break if new_line.eod?
+        next if new_line.text.empty?
+        line.text << " #{new_line.text.rstrip}"
+      end while is_ruby_multiline?(new_line.text)
       next_line
-      text
+      line
     end
 
     # `text' is a Ruby multiline block if it:
@@ -735,16 +800,13 @@ module Haml
     # - but not "?," which is a character literal
     #   (however, "x?," is a method call and not a literal)
     # - and not "?\," which is a character literal
-    #
     def is_ruby_multiline?(text)
       text && text.length > 1 && text[-1] == ?, &&
-        !((text[-3..-2] =~ /\W\?/) || text[-3..-2] == "?\\")
+        !((text[-3, 2] =~ /\W\?/) || text[-3, 2] == "?\\")
     end
 
     def balance(*args)
-      res = Haml::Util.balance(*args)
-      return res if res
-      raise SyntaxError.new(Error.message(:unbalanced_brackets))
+      Haml::Util.balance(*args) or raise(SyntaxError.new(Error.message(:unbalanced_brackets)))
     end
 
     def block_opened?
@@ -754,7 +816,7 @@ module Haml
     # Same semantics as block_opened?, except that block_opened? uses Line#tabs,
     # which doesn't interact well with filter lines
     def filter_opened?
-      @next_line.full =~ (@indentation ? /^#{@indentation * @template_tabs}/ : /^\s/)
+      @next_line.full =~ (@indentation ? /^#{@indentation * (@template_tabs + 1)}/ : /^\s/)
     end
 
     def flat?

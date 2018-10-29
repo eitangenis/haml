@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 begin
   require 'erubis/tiny'
 rescue LoadError
@@ -12,38 +14,6 @@ module Haml
   module Util
     extend self
 
-    # Computes the powerset of the given array.
-    # This is the set of all subsets of the array.
-    #
-    # @example
-    #   powerset([1, 2, 3]) #=>
-    #     Set[Set[], Set[1], Set[2], Set[3], Set[1, 2], Set[2, 3], Set[1, 3], Set[1, 2, 3]]
-    # @param arr [Enumerable]
-    # @return [Set<Set>] The subsets of `arr`
-    def powerset(arr)
-      arr.inject([Set.new].to_set) do |powerset, el|
-        new_powerset = Set.new
-        powerset.each do |subset|
-          new_powerset << subset
-          new_powerset << subset + [el]
-        end
-        new_powerset
-      end
-    end
-
-    # Returns information about the caller of the previous method.
-    #
-    # @param entry [String] An entry in the `#caller` list, or a similarly formatted string
-    # @return [[String, Fixnum, (String, nil)]] An array containing the filename, line, and method name of the caller.
-    #   The method name may be nil
-    def caller_info(entry = caller[1])
-      info = entry.scan(/^(.*?):(-?.*?)(?::.*`(.+)')?$/).first
-      info[1] = info[1].to_i
-      # This is added by Rubinius to designate a block, but we don't care about it.
-      info[2].sub!(/ \{\}\Z/, '') if info[2]
-      info
-    end
-
     # Silence all output to STDERR within a block.
     #
     # @yield A block in which no output will be printed to STDERR
@@ -52,19 +22,6 @@ module Haml
       yield
     ensure
       $stderr = the_real_stderr
-    end
-
-    # Returns an ActionView::Template* class.
-    # In pre-3.0 versions of Rails, most of these classes
-    # were of the form `ActionView::TemplateFoo`,
-    # while afterwards they were of the form `ActionView;:Template::Foo`.
-    #
-    # @param name [#to_s] The name of the class to get.
-    #   For example, `:Error` will return `ActionView::TemplateError`
-    #   or `ActionView::Template::Error`.
-    def av_template_class(name)
-      return ActionView.const_get("Template#{name}") if ActionView.const_defined?("Template#{name}")
-      return ActionView::Template.const_get(name.to_s)
     end
 
     ## Rails XSS Safety
@@ -82,6 +39,9 @@ module Haml
     # With older versions of the Rails XSS-safety mechanism,
     # this destructively modifies the HTML-safety of `text`.
     #
+    # It only works if you are using ActiveSupport or the parameter `text`
+    # implements the #html_safe method.
+    #
     # @param text [String, nil]
     # @return [String, nil] `text`, marked as HTML-safe
     def html_safe(text)
@@ -89,174 +49,89 @@ module Haml
       text.html_safe
     end
 
-    # Checks that the encoding of a string is valid in Ruby 1.9
+    # Checks that the encoding of a string is valid
     # and cleans up potential encoding gotchas like the UTF-8 BOM.
     # If it's not, yields an error string describing the invalid character
-    # and the line on which it occurrs.
+    # and the line on which it occurs.
     #
     # @param str [String] The string of which to check the encoding
     # @yield [msg] A block in which an encoding error can be raised.
     #   Only yields if there is an encoding error
     # @yieldparam msg [String] The error message to be raised
     # @return [String] `str`, potentially with encoding gotchas like BOMs removed
-    if RUBY_VERSION < "1.9"
-      def check_encoding(str)
-        str.gsub(/\A\xEF\xBB\xBF/, '') # Get rid of the UTF-8 BOM
-      end
-    else
-
-      def check_encoding(str)
-        if str.valid_encoding?
-          # Get rid of the Unicode BOM if possible
-          if str.encoding.name =~ /^UTF-(8|16|32)(BE|LE)?$/
-            return str.gsub(Regexp.new("\\A\uFEFF".encode(str.encoding.name)), '')
-          else
-            return str
-          end
+    def check_encoding(str)
+      if str.valid_encoding?
+        # Get rid of the Unicode BOM if possible
+        # Shortcut for UTF-8 which might be the majority case
+        if str.encoding == Encoding::UTF_8
+          return str.gsub(/\A\uFEFF/, '')
+        elsif str.encoding.name =~ /^UTF-(16|32)(BE|LE)?$/
+          return str.gsub(Regexp.new("\\A\uFEFF".encode(str.encoding)), '')
+        else
+          return str
         end
+      end
 
-        encoding = str.encoding
-        newlines = Regexp.new("\r\n|\r|\n".encode(encoding).force_encoding("binary"))
-        str.force_encoding("binary").split(newlines).each_with_index do |line, i|
-          begin
-            line.encode(encoding)
-          rescue Encoding::UndefinedConversionError => e
-            yield <<MSG.rstrip, i + 1
+      encoding = str.encoding
+      newlines = Regexp.new("\r\n|\r|\n".encode(encoding).force_encoding(Encoding::ASCII_8BIT))
+      str.force_encoding(Encoding::ASCII_8BIT).split(newlines).each_with_index do |line, i|
+        begin
+          line.encode(encoding)
+        rescue Encoding::UndefinedConversionError => e
+          yield <<MSG.rstrip, i + 1
 Invalid #{encoding.name} character #{e.error_char.dump}
 MSG
-          end
         end
-        return str
       end
+      return str
     end
 
-    if RUBY_VERSION < "1.9"
-      # Like {\#check\_encoding}, but also checks for a Ruby-style `-# coding:` comment
-      # at the beginning of the template and uses that encoding if it exists.
-      #
-      # The Haml encoding rules are simple.
-      # If a `-# coding:` comment exists,
-      # we assume that that's the original encoding of the document.
-      # Otherwise, we use whatever encoding Ruby has.
-      #
-      # Haml uses the same rules for parsing coding comments as Ruby.
-      # This means that it can understand Emacs-style comments
-      # (e.g. `-*- encoding: "utf-8" -*-`),
-      # and also that it cannot understand non-ASCII-compatible encodings
-      # such as `UTF-16` and `UTF-32`.
-      #
-      # @param str [String] The Haml template of which to check the encoding
-      # @yield [msg] A block in which an encoding error can be raised.
-      #   Only yields if there is an encoding error
-      # @yieldparam msg [String] The error message to be raised
-      # @return [String] The original string encoded properly
-      # @raise [ArgumentError] if the document declares an unknown encoding
-      def check_haml_encoding(str, &block)
-        check_encoding(str, &block)
-      end
-    else
-      def check_haml_encoding(str, &block)
-        str = str.dup if str.frozen?
+    # Like {\#check\_encoding}, but also checks for a Ruby-style `-# coding:` comment
+    # at the beginning of the template and uses that encoding if it exists.
+    #
+    # The Haml encoding rules are simple.
+    # If a `-# coding:` comment exists,
+    # we assume that that's the original encoding of the document.
+    # Otherwise, we use whatever encoding Ruby has.
+    #
+    # Haml uses the same rules for parsing coding comments as Ruby.
+    # This means that it can understand Emacs-style comments
+    # (e.g. `-*- encoding: "utf-8" -*-`),
+    # and also that it cannot understand non-ASCII-compatible encodings
+    # such as `UTF-16` and `UTF-32`.
+    #
+    # @param str [String] The Haml template of which to check the encoding
+    # @yield [msg] A block in which an encoding error can be raised.
+    #   Only yields if there is an encoding error
+    # @yieldparam msg [String] The error message to be raised
+    # @return [String] The original string encoded properly
+    # @raise [ArgumentError] if the document declares an unknown encoding
+    def check_haml_encoding(str, &block)
+      str = str.dup if str.frozen?
 
-        bom, encoding = parse_haml_magic_comment(str)
-        if encoding; str.force_encoding(encoding)
-        elsif bom; str.force_encoding("UTF-8")
-        end
-
-        return check_encoding(str, &block)
+      bom, encoding = parse_haml_magic_comment(str)
+      if encoding; str.force_encoding(encoding)
+      elsif bom; str.force_encoding(Encoding::UTF_8)
       end
+
+      return check_encoding(str, &block)
     end
 
-    if RUBY_VERSION < "1.9.2"
-      def inspect_obj(obj)
-        return obj.inspect
-      end
-    else
-      # Like `Object#inspect`, but preserves non-ASCII characters rather than escaping them under Ruby 1.9.2.
-      # This is necessary so that the precompiled Haml template can be `#encode`d into `@options[:encoding]`
-      # before being evaluated.
-      #
-      # @param obj {Object}
-      # @return {String}
-      def inspect_obj(obj)
-        return ':' + inspect_obj(obj.to_s) if obj.is_a?(Symbol)
-        return obj.inspect unless obj.is_a?(String)
-        '"' + obj.gsub(/[\x00-\x7F]+/) {|s| s.inspect[1...-1]} + '"'
-      end
-    end
-
-    ## Static Method Stuff
-
-    # The context in which the ERB for \{#def\_static\_method} will be run.
-    class StaticConditionalContext
-      # @param set [#include?] The set of variables that are defined for this context.
-      def initialize(set)
-        @set = set
-      end
-
-      # Checks whether or not a variable is defined for this context.
-      #
-      # @param name [Symbol] The name of the variable
-      # @return [Boolean]
-      def method_missing(name, *args, &block)
-        super unless args.empty? && block.nil?
-        @set.include?(name)
-      end
-    end
-
-    # This is used for methods in {Haml::Buffer} that need to be very fast,
-    # and take a lot of boolean parameters
-    # that are known at compile-time.
-    # Instead of passing the parameters in normally,
-    # a separate method is defined for every possible combination of those parameters;
-    # these are then called using \{#static\_method\_name}.
+    # Like `Object#inspect`, but preserves non-ASCII characters rather than escaping them.
+    # This is necessary so that the precompiled Haml template can be `#encode`d into `@options[:encoding]`
+    # before being evaluated.
     #
-    # To define a static method, an ERB template for the method is provided.
-    # All conditionals based on the static parameters
-    # are done as embedded Ruby within this template.
-    # For example:
-    #
-    #     def_static_method(Foo, :my_static_method, [:foo, :bar], :baz, :bang, <<RUBY)
-    #       <% if baz && bang %>
-    #         return foo + bar
-    #       <% elsif baz || bang %>
-    #         return foo - bar
-    #       <% else %>
-    #         return 17
-    #       <% end %>
-    #     RUBY
-    #
-    # \{#static\_method\_name} can be used to call static methods.
-    #
-    # @overload def_static_method(klass, name, args, *vars, erb)
-    # @param klass [Module] The class on which to define the static method
-    # @param name [#to_s] The (base) name of the static method
-    # @param args [Array<Symbol>] The names of the arguments to the defined methods
-    #   (**not** to the ERB template)
-    # @param vars [Array<Symbol>] The names of the static boolean variables
-    #   to be made available to the ERB template
-    def def_static_method(klass, name, args, *vars)
-      erb = vars.pop
-      info = caller_info
-      powerset(vars).each do |set|
-        context = StaticConditionalContext.new(set).instance_eval {binding}
-        method_content = (defined?(Erubis::TinyEruby) && Erubis::TinyEruby || ERB).new(erb).result(context)
-
-        klass.class_eval(<<METHOD, info[0], info[1])
-          def #{static_method_name(name, *vars.map {|v| set.include?(v)})}(#{args.join(', ')})
-            #{method_content}
-          end
-METHOD
+    # @param obj {Object}
+    # @return {String}
+    def inspect_obj(obj)
+      case obj
+      when String
+        %Q!"#{obj.gsub(/[\x00-\x7F]+/) {|s| s.dump[1...-1]}}"!
+      when Symbol
+        ":#{inspect_obj(obj.to_s)}"
+      else
+        obj.inspect
       end
-    end
-
-    # Computes the name for a method defined via \{#def\_static\_method}.
-    #
-    # @param name [String] The base name of the static method
-    # @param vars [Array<Boolean>] The static variable assignment
-    # @return [String] The real name of the static method
-    def static_method_name(name, *vars)
-      :"#{name}_#{vars.map {|v| !!v}.join('_')}"
     end
 
     # Scans through a string looking for the interoplation-opening `#{`
@@ -271,7 +146,7 @@ METHOD
     # @return [String] The text remaining in the scanner after all `#{`s have been processed
     def handle_interpolation(str)
       scan = StringScanner.new(str)
-      yield scan while scan.scan(/(.*?)(\\*)\#\{/)
+      yield scan while scan.scan(/(.*?)(\\*)#([\{@$])/)
       scan.rest
     end
 
@@ -283,17 +158,15 @@ METHOD
     #     from                    to
     #
     # @param scanner [StringScanner] The string scanner to move
-    # @param start [Character] The character opening the balanced pair.
-    #   A `Fixnum` in 1.8, a `String` in 1.9
-    # @param finish [Character] The character closing the balanced pair.
-    #   A `Fixnum` in 1.8, a `String` in 1.9
+    # @param start [String] The character opening the balanced pair.
+    # @param finish [String] The character closing the balanced pair.
     # @param count [Fixnum] The number of opening characters matched
     #   before calling this method
     # @return [(String, String)] The string matched within the balanced pair
     #   and the rest of the string.
     #   `["Foo (Bar (Baz bang) bop)", " (Bang (bop bip))"]` in the example above.
     def balance(scanner, start, finish, count = 0)
-      str = ''
+      str = ''.dup
       scanner = StringScanner.new(scanner) unless scanner.is_a? StringScanner
       regexp = Regexp.new("(.*?)[\\#{start.chr}\\#{finish.chr}]", Regexp::MULTILINE)
       while scanner.scan(regexp)
@@ -322,20 +195,28 @@ METHOD
     end
 
     def contains_interpolation?(str)
-      str.include?('#{')
+      /#[\{$@]/ === str
     end
 
     def unescape_interpolation(str, escape_html = nil)
-      res = ''
+      res = ''.dup
       rest = Haml::Util.handle_interpolation str.dump do |scan|
         escapes = (scan[2].size - 1) / 2
+        char = scan[3] # '{', '@' or '$'
         res << scan.matched[0...-3 - escapes]
         if escapes % 2 == 1
-          res << '#{'
+          res << "\##{char}"
         else
-          content = eval('"' + balance(scan, ?{, ?}, 1)[0][0...-1] + '"')
+          interpolated = if char == '{'
+            balance(scan, ?{, ?}, 1)[0][0...-1]
+          else
+            scan.scan(/\w+/)
+          end
+          content = eval("\"#{interpolated}\"")
+          content.prepend(char) if char == '@' || char == '$'
           content = "Haml::Helpers.html_escape((#{content}))" if escape_html
-          res << '#{' + content + "}"# Use eval to get rid of string escapes
+
+          res << "\#{#{content}}"
         end
       end
       res + rest
@@ -350,7 +231,7 @@ METHOD
     #   Whether the document begins with a UTF-8 BOM,
     #   and the declared encoding of the document (or nil if none is declared)
     def parse_haml_magic_comment(str)
-      scanner = StringScanner.new(str.dup.force_encoding("BINARY"))
+      scanner = StringScanner.new(str.dup.force_encoding(Encoding::ASCII_8BIT))
       bom = scanner.scan(/\xEF\xBB\xBF/n)
       return bom unless scanner.scan(/-\s*#\s*/n)
       if coding = try_parse_haml_emacs_magic_comment(scanner)

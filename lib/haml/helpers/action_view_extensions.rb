@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 module Haml
   module Helpers
     @@action_view_defined = true
@@ -32,7 +33,7 @@ module Haml
       #
       # @return [String] The class name for the current page
       def page_class
-        controller.controller_name + " " + controller.action_name
+        "#{controller.controller_name} #{controller.action_name}"
       end
       alias_method :generate_content_class_names, :page_class
 
@@ -45,7 +46,7 @@ module Haml
       # @yield A block in which all input to `#haml_concat` is treated as raw.
       # @see Haml::Util#rails_xss_safe?
       def with_raw_haml_concat
-        old = instance_variable_defined?('@_haml_concat_raw') ? @_haml_concat_raw : false
+        old = instance_variable_defined?(:@_haml_concat_raw) ? @_haml_concat_raw : false
         @_haml_concat_raw = true
         yield
       ensure

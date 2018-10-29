@@ -1,3 +1,6 @@
+# frozen_string_literal: true
+require 'erb'
+
 module Haml
   # This module contains various helpful methods to make it easier to do various tasks.
   # {Haml::Helpers} is automatically included in the context
@@ -106,7 +109,8 @@ MESSAGE
     #   @yield The block within which to escape newlines
     def find_and_preserve(input = nil, tags = haml_buffer.options[:preserve], &block)
       return find_and_preserve(capture_haml(&block), input || tags) if block
-      re = /<(#{tags.map(&Regexp.method(:escape)).join('|')})([^>]*)>(.*?)(<\/\1>)/im
+      tags = tags.map { |tag| Regexp.escape(tag) }.join('|')
+      re = /<(#{tags})([^>]*)>(.*?)(<\/\1>)/im
       input.to_s.gsub(re) do |s|
         s =~ re # Can't rely on $1, etc. existing since Rails' SafeBuffer#gsub is incompatible
         "<#{$1}#{$2}>#{preserve($3)}</#{$1}>"
@@ -117,17 +121,20 @@ MESSAGE
     # HTML entities so they'll render correctly in
     # whitespace-sensitive tags without screwing up the indentation.
     #
-    # @overload perserve(input)
+    # @overload preserve(input)
     #   Escapes newlines within a string.
     #
     #   @param input [String] The string within which to escape all newlines
-    # @overload perserve
+    # @overload preserve
     #   Escapes newlines within a block of Haml code.
     #
     #   @yield The block within which to escape newlines
     def preserve(input = nil, &block)
       return preserve(capture_haml(&block)) if block
-      input.to_s.chomp("\n").gsub(/\n/, '&#x000A;').gsub(/\r/, '')
+      s = input.to_s.chomp("\n")
+      s.gsub!(/\n/, '&#x000A;')
+      s.delete!("\r")
+      s
     end
     alias_method :flatten, :preserve
 
@@ -190,20 +197,19 @@ MESSAGE
     # @yield [item] A block which contains Haml code that goes within list items
     # @yieldparam item An element of `enum`
     def list_of(enum, opts={}, &block)
-      opts_attributes = opts.empty? ? "" : " ".<<(opts.map{|k,v| "#{k}='#{v}'" }.join(" "))
-      to_return = enum.collect do |i|
+      opts_attributes = opts.map { |k, v| " #{k}='#{v}'" }.join
+      enum.map do |i|
         result = capture_haml(i, &block)
 
         if result.count("\n") > 1
-          result = result.gsub("\n", "\n  ")
+          result.gsub!("\n", "\n  ")
           result = "\n  #{result.strip}\n"
         else
-          result = result.strip
+          result.strip!
         end
 
         %Q!<li#{opts_attributes}>#{result}</li>!
-      end
-      to_return.join("\n")
+      end.join("\n")
     end
 
     # Returns a hash containing default assignments for the `xmlns`, `lang`, and `xml:lang`
@@ -219,7 +225,11 @@ MESSAGE
     # @param lang [String] The value of `xml:lang` and `lang`
     # @return [{#to_s => String}] The attribute hash
     def html_attrs(lang = 'en-US')
-      {:xmlns => "http://www.w3.org/1999/xhtml", 'xml:lang' => lang, :lang => lang}
+      if haml_buffer.options[:format] == :xhtml
+        {:xmlns => "http://www.w3.org/1999/xhtml", 'xml:lang' => lang, :lang => lang}
+      else
+        {:lang => lang}
+      end
     end
 
     # Increments the number of tabs the buffer automatically adds
@@ -370,12 +380,10 @@ MESSAGE
         captured = haml_buffer.buffer.slice!(position..-1)
 
         if captured == '' and value != haml_buffer.buffer
-             captured = (value.is_a?(String) ? value : nil)
+          captured = (value.is_a?(String) ? value : nil)
         end
 
-        return nil if captured.nil?
-        return (haml_buffer.options[:ugly] ? captured : prettify(captured))
-
+        captured
       end
     ensure
       haml_buffer.capture_position = nil
@@ -385,14 +393,34 @@ MESSAGE
     #
     # @param text [#to_s] The text to output
     def haml_concat(text = "")
-      unless haml_buffer.options[:ugly] || haml_indent == 0
-        haml_buffer.buffer << haml_indent <<
-          text.to_s.gsub("\n", "\n" + haml_indent) << "\n"
-      else
-        haml_buffer.buffer << text.to_s << "\n"
-      end
+      haml_internal_concat text
       ErrorReturn.new("haml_concat")
     end
+
+    # Internal method to write directly to the buffer with control of
+    # whether the first line should be indented, and if there should be a
+    # final newline.
+    #
+    # Lines added will have the proper indentation. This can be controlled
+    # for the first line.
+    #
+    # Used by #haml_concat and #haml_tag.
+    #
+    # @param text [#to_s] The text to output
+    # @param newline [Boolean] Whether to add a newline after the text
+    # @param indent [Boolean] Whether to add indentation to the first line
+    def haml_internal_concat(text = "", newline = true, indent = true)
+      if haml_buffer.tabulation == 0
+        haml_buffer.buffer << "#{text}#{"\n" if newline}"
+      else
+        haml_buffer.buffer << %[#{haml_indent if indent}#{text.to_s.gsub("\n", "\n#{haml_indent}")}#{"\n" if newline}]
+      end
+    end
+    private :haml_internal_concat
+
+    # Allows writing raw content. `haml_internal_concat_raw` isn't
+    # effected by XSS mods. Used by #haml_tag to write the actual tags.
+    alias :haml_internal_concat_raw :haml_internal_concat
 
     # @return [String] The indentation string for the current line
     def haml_indent
@@ -466,14 +494,14 @@ MESSAGE
       attrs.keys.each {|key| attrs[key.to_s] = attrs.delete(key)} unless attrs.empty?
       name, attrs = merge_name_and_attributes(name.to_s, attrs)
 
-      attributes = Haml::Compiler.build_attributes(haml_buffer.html?,
+      attributes = Haml::AttributeBuilder.build_attributes(haml_buffer.html?,
         haml_buffer.options[:attr_wrapper],
         haml_buffer.options[:escape_attrs],
         haml_buffer.options[:hyphenate_data_attrs],
         attrs)
 
       if text.nil? && block.nil? && (haml_buffer.options[:autoclose].include?(name) || flags.include?(:/))
-        haml_concat "<#{name}#{attributes} />"
+        haml_internal_concat_raw "<#{name}#{attributes}#{' /' if haml_buffer.options[:format] == :xhtml}>"
         return ret
       end
 
@@ -483,17 +511,19 @@ MESSAGE
       end
 
       tag = "<#{name}#{attributes}>"
+      end_tag = "</#{name}>"
       if block.nil?
         text = text.to_s
         if text.include?("\n")
-          haml_concat tag
+          haml_internal_concat_raw tag
           tab_up
-          haml_concat text
+          haml_internal_concat text
           tab_down
-          haml_concat "</#{name}>"
+          haml_internal_concat_raw end_tag
         else
-          tag << text << "</#{name}>"
-          haml_concat tag
+          haml_internal_concat_raw tag, false
+          haml_internal_concat text, false, false
+          haml_internal_concat_raw end_tag, true, false
         end
         return ret
       end
@@ -503,67 +533,92 @@ MESSAGE
       end
 
       if flags.include?(:<)
-        tag << capture_haml(&block).strip << "</#{name}>"
-        haml_concat tag
+        haml_internal_concat_raw tag, false
+        haml_internal_concat "#{capture_haml(&block).strip}", false, false
+        haml_internal_concat_raw end_tag, true, false
         return ret
       end
 
-      haml_concat tag
+      haml_internal_concat_raw tag
       tab_up
       block.call
       tab_down
-      haml_concat "</#{name}>"
+      haml_internal_concat_raw end_tag
 
       ret
     end
 
-    # Characters that need to be escaped to HTML entities from user input
-    HTML_ESCAPE = { '&'=>'&amp;', '<'=>'&lt;', '>'=>'&gt;', '"'=>'&quot;', "'"=>'&#039;', }
-
-    HTML_ESCAPE_REGEX = /[\"><&]/
-
-    if RUBY_VERSION >= '1.9'
-      # Include docs here so they are picked up by Yard
-
-      # Returns a copy of `text` with ampersands, angle brackets and quotes
-      # escaped into HTML entities.
-      #
-      # Note that if ActionView is loaded and XSS protection is enabled
-      # (as is the default for Rails 3.0+, and optional for version 2.3.5+),
-      # this won't escape text declared as "safe".
-      #
-      # @param text [String] The string to sanitize
-      # @return [String] The sanitized string
-      def html_escape(text)
-        text = text.to_s
-        text.gsub(HTML_ESCAPE_REGEX, HTML_ESCAPE)
+    # Conditionally wrap a block in an element. If `condition` is `true` then
+    # this method renders the tag described by the arguments in `tag` (using
+    # \{#haml_tag}) with the given block inside, otherwise it just renders the block.
+    #
+    # For example,
+    #
+    #     - haml_tag_if important, '.important' do
+    #       %p
+    #         A (possibly) important paragraph.
+    #
+    # will produce
+    #
+    #     <div class='important'>
+    #       <p>
+    #         A (possibly) important paragraph.
+    #       </p>
+    #     </div>
+    #
+    # if `important` is truthy, and just
+    #
+    #     <p>
+    #       A (possibly) important paragraph.
+    #     </p>
+    #
+    # otherwise.
+    #
+    # Like \{#haml_tag}, `haml_tag_if` outputs directly to the buffer and its
+    # return value should not be used. Use \{#capture_haml} if you need to use
+    # its results as a string.
+    #
+    # @param condition The condition to test to determine whether to render
+    #   the enclosing tag
+    # @param tag Definition of the enclosing tag. See \{#haml_tag} for details
+    #   (specifically the form that takes a block)
+    def haml_tag_if(condition, *tag)
+      if condition
+        haml_tag(*tag){ yield }
+      else
+        yield
       end
-    else
-      def html_escape(text)
-        text = text.to_s
-        text.gsub(HTML_ESCAPE_REGEX) {|s| HTML_ESCAPE[s]}
-      end
+      ErrorReturn.new("haml_tag_if")
     end
 
-    HTML_ESCAPE_ONCE_REGEX = /[\"><]|&(?!(?:[a-zA-Z]+|(#\d+));)/
+    # Characters that need to be escaped to HTML entities from user input
+    HTML_ESCAPE = { '&' => '&amp;', '<' => '&lt;', '>' => '&gt;', '"' => '&quot;', "'" => '&#39;' }
 
-    if RUBY_VERSION >= '1.9'
-      # Include docs here so they are picked up by Yard
+    HTML_ESCAPE_REGEX = /['"><&]/
 
-      # Escapes HTML entities in `text`, but without escaping an ampersand
-      # that is already part of an escaped entity.
-      #
-      # @param text [String] The string to sanitize
-      # @return [String] The sanitized string
-      def escape_once(text)
-        text = text.to_s
-        text.gsub(HTML_ESCAPE_ONCE_REGEX, HTML_ESCAPE)
-      end
-    else
-      def escape_once(text)
-        text = text.to_s
-        text.gsub(HTML_ESCAPE_ONCE_REGEX){|s| HTML_ESCAPE[s]}
-      end
+    # Returns a copy of `text` with ampersands, angle brackets and quotes
+    # escaped into HTML entities.
+    #
+    # Note that if ActionView is loaded and XSS protection is enabled
+    # (as is the default for Rails 3.0+, and optional for version 2.3.5+),
+    # this won't escape text declared as "safe".
+    #
+    # @param text [String] The string to sanitize
+    # @return [String] The sanitized string
+    def html_escape(text)
+      ERB::Util.html_escape(text)
+    end
+
+    HTML_ESCAPE_ONCE_REGEX = /['"><]|&(?!(?:[a-zA-Z]+|#(?:\d+|[xX][0-9a-fA-F]+));)/
+
+    # Escapes HTML entities in `text`, but without escaping an ampersand
+    # that is already part of an escaped entity.
+    #
+    # @param text [String] The string to sanitize
+    # @return [String] The sanitized string
+    def escape_once(text)
+      text = text.to_s
+      text.gsub(HTML_ESCAPE_ONCE_REGEX, HTML_ESCAPE)
     end
 
     # Returns whether or not the current template is a Haml template.
@@ -593,7 +648,7 @@ MESSAGE
       # skip merging if no ids or classes found in name
       return name, attributes_hash unless name =~ /^(.+?)?([\.#].*)$/
 
-      return $1 || "div", Buffer.merge_attrs(
+      return $1 || "div", AttributeBuilder.merge_attributes!(
         Haml::Parser.parse_class_and_id($2), attributes_hash)
     end
 
@@ -630,22 +685,6 @@ MESSAGE
       _erbout = _erbout = _hamlout.buffer
       proc { |*args| proc.call(*args) }
     end
-
-    def prettify(text)
-      text = text.split(/^/)
-      text.delete('')
-
-      min_tabs = nil
-      text.each do |line|
-        tabs = line.index(/[^ ]/) || line.length
-        min_tabs ||= tabs
-        min_tabs = min_tabs > tabs ? tabs : min_tabs
-      end
-
-      text.map do |line|
-        line.slice(min_tabs, line.length)
-      end.join
-    end
   end
 end
 
@@ -661,4 +700,3 @@ class Object
     false
   end
 end
-
